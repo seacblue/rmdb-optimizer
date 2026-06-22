@@ -101,6 +101,9 @@ bool DiskManager::is_file(const std::string &path) {
  * @param {string} &path
  */
 void DiskManager::create_file(const std::string &path) {
+    if (path.empty()) {
+        throw FileNotFoundError(path);
+    }
     if (is_file(path)) {
         throw FileExistsError(path);
     }
