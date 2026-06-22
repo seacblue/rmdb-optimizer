@@ -41,9 +41,11 @@ static const std::string TEST_DIR = "module_test_dir";
  *        如果目录已存在则不重复创建。
  */
 inline void EnterTestDir(DiskManager *dm) {
-    if (!dm->is_dir(TEST_DIR)) {
-        dm->create_dir(TEST_DIR);
+    // 先销毁再创建，确保进入一个干净的空目录
+    if (dm->is_dir(TEST_DIR)) {
+        dm->destroy_dir(TEST_DIR);
     }
+    dm->create_dir(TEST_DIR);
     ASSERT_TRUE(dm->is_dir(TEST_DIR));
     if (chdir(TEST_DIR.c_str()) < 0) {
         perror("chdir");
