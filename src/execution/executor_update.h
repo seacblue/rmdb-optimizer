@@ -59,7 +59,7 @@ class UpdateExecutor : public AbstractExecutor {
 
                 auto old_key = std::make_unique<char[]>(index.col_tot_len);
                 int offset = 0;
-                for (size_t k = 0; k < index.col_num; ++k) {
+                for (size_t k = 0; k < (size_t)index.col_num; ++k) {
                     memcpy(old_key.get() + offset, rec->data + index.cols[k].offset, index.cols[k].len);
                     offset += index.cols[k].len;
                 }
@@ -89,7 +89,7 @@ class UpdateExecutor : public AbstractExecutor {
 
                 auto new_key = std::make_unique<char[]>(index.col_tot_len);
                 int offset = 0;
-                for (size_t k = 0; k < index.col_num; ++k) {
+                for (size_t k = 0; k < (size_t)index.col_num; ++k) {
                     memcpy(new_key.get() + offset, rec->data + index.cols[k].offset, index.cols[k].len);
                     offset += index.cols[k].len;
                 }

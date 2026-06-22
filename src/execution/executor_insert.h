@@ -83,7 +83,7 @@ class InsertExecutor : public AbstractExecutor {
             auto ih = sm_manager_->ihs_.at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
             auto key = std::make_unique<char[]>(index.col_tot_len);
             int offset = 0;
-            for(size_t k = 0; k < index.col_num; ++k) {
+            for(size_t k = 0; k < (size_t)index.col_num; ++k) {
                 memcpy(key.get() + offset, rec.data + index.cols[k].offset, index.cols[k].len);
                 offset += index.cols[k].len;
             }
