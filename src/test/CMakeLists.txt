@@ -110,7 +110,7 @@ add_test(NAME test_oj_storage COMMAND test_oj_storage
 # Problem 3: BIGINT 类型支持
 # 编译 & 运行: make test_oj_bigint -j$(nproc) && ./bin/test_oj_bigint
 add_executable(test_oj_bigint oj/test_oj_bigint.cpp)
-target_link_libraries(test_oj_bigint execution system record index storage lru_replacer ${TEST_LIBS})
+target_link_libraries(test_oj_bigint execution system record index storage lru_replacer parser planner analyze ${TEST_LIBS})
 target_include_directories(test_oj_bigint PRIVATE ${TEST_INCLUDES})
 target_link_options(test_oj_bigint PRIVATE -Wl,--start-group)
 target_link_options(test_oj_bigint PRIVATE -Wl,--end-group)
@@ -121,7 +121,7 @@ add_test(NAME test_oj_bigint COMMAND test_oj_bigint
 # Problem 4: DATETIME 类型支持
 # 编译 & 运行: make test_oj_datetime -j$(nproc) && ./bin/test_oj_datetime
 add_executable(test_oj_datetime oj/test_oj_datetime.cpp)
-target_link_libraries(test_oj_datetime execution system record index storage lru_replacer ${TEST_LIBS})
+target_link_libraries(test_oj_datetime execution system record index storage lru_replacer parser planner analyze ${TEST_LIBS})
 target_include_directories(test_oj_datetime PRIVATE ${TEST_INCLUDES})
 target_link_options(test_oj_datetime PRIVATE -Wl,--start-group)
 target_link_options(test_oj_datetime PRIVATE -Wl,--end-group)
