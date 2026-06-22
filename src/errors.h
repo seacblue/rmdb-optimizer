@@ -161,3 +161,9 @@ class PageNotExistError : public RMDBError {
     PageNotExistError(const std::string &table_name, int page_no)
         : RMDBError("Page " + std::to_string(page_no) + " in table " + table_name + "not exits") {}
 };
+
+class InvalidDatetimeError : public RMDBError {
+   public:
+    InvalidDatetimeError(const std::string &val)
+        : RMDBError("Invalid datetime value: " + val) {}
+};

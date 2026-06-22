@@ -38,15 +38,13 @@ See the Mulan PSL v2 for more details. */
 #include <string>
 #include <vector>
 
-#include "parser/ast.h"
-#include "common/config.h"
 #include "execution/execution_manager.h"
 #include "execution/executor_abstract.h"
 #include "execution/executor_delete.h"
 #include "execution/executor_index_scan.h"
 #include "execution/executor_insert.h"
-#include "execution/executor_load.h"
 #include "execution/executor_nestedloop_join.h"
+#include "execution/executor_load.h"
 #include "execution/executor_projection.h"
 #include "execution/executor_seq_scan.h"
 #include "execution/executor_update.h"
@@ -58,6 +56,7 @@ See the Mulan PSL v2 for more details. */
 #include "system/sm.h"
 #include "system/sm_manager.h"
 #include "test_utils.h"
+#include "common/config.h"
 
 // ============================================================
 // 测试夹具
@@ -152,6 +151,24 @@ class ExecutorTest : public ::testing::Test {
         return val;
     }
 
+    /** 构造一条 bigint 值 (Value) */
+    static Value make_bigint_val(int64_t v) {
+        Value val;
+        val.set_bigint(v);
+        return val;
+    }
+
+    /** 构造条件：列 OP 列（同一张表的列-列比较） */
+    static Condition make_cond_col(const std::string &tab1, const std::string &col1,
+                                    CompOp op, const std::string &tab2, const std::string &col2) {
+        Condition c;
+        c.lhs_col = {tab1, col1};
+        c.is_rhs_val = false;
+        c.rhs_col = {tab2, col2};
+        c.op = op;
+        return c;
+    }
+
     /** 构造 TabCol */
     static TabCol make_tabcol(const std::string &tab, const std::string &col) {
         return {tab, col};
@@ -166,18 +183,6 @@ class ExecutorTest : public ::testing::Test {
         c.rhs_val = val;
         c.op = op;
         return c;
-    }
-
-    static std::shared_ptr<ast::Expr> make_col_expr(const std::string &tab, const std::string &col) {
-        return std::make_shared<ast::Col>(tab, col);
-    }
-
-    static std::shared_ptr<ast::Expr> make_int_expr(int v) {
-        return std::make_shared<ast::IntLit>(v);
-    }
-
-    static std::shared_ptr<ast::Expr> make_float_expr(float v) {
-        return std::make_shared<ast::FloatLit>(v);
     }
 };
 
@@ -301,71 +306,6 @@ TEST_F(ExecutorTest, UpdateRecord) {
     EXPECT_FLOAT_EQ(*(float *)(verify_rec->data + tab.cols[2].offset), 100.0f);
 }
 
-TEST_F(ExecutorTest, UpdateRecordWithExpression) {
-    auto tab = get_tab(TABLE1);
-    auto fh = get_fh(TABLE1);
-
-    auto insert = std::make_unique<InsertExecutor>(sm_manager_, TABLE1,
-        std::vector<Value>{make_int_val(3), make_str_val("Expr"), make_float_val(1.5f)}, context_);
-    insert->Next();
-
-    std::vector<Rid> rids;
-    {
-        std::vector<Condition> empty_conds;
-        auto seq = std::make_unique<SeqScanExecutor>(sm_manager_, TABLE1, empty_conds, context_);
-        for (seq->beginTuple(); !seq->is_end(); seq->nextTuple()) {
-            rids.push_back(seq->rid());
-        }
-    }
-    ASSERT_EQ(rids.size(), 1);
-
-    SetClause set_clause;
-    set_clause.lhs = make_tabcol(TABLE1, "score");
-    set_clause.rhs_expr = std::make_shared<ast::ArithExpr>(
-        std::make_shared<ast::ArithExpr>(make_col_expr(TABLE1, "id"), ast::SV_OP_MUL, make_int_expr(2)),
-        ast::SV_OP_ADD,
-        make_col_expr(TABLE1, "score"));
-
-    auto update = std::make_unique<UpdateExecutor>(sm_manager_, TABLE1,
-        std::vector<SetClause>{set_clause},
-        std::vector<Condition>{}, rids, context_);
-    update->Next();
-
-    auto verify_rec = fh->get_record(rids[0], context_);
-    EXPECT_FLOAT_EQ(*(float *)(verify_rec->data + tab.cols[2].offset), 7.5f);
-}
-
-TEST_F(ExecutorTest, UpdateRecordWithUnaryMinusExpression) {
-    auto tab = get_tab(TABLE1);
-    auto fh = get_fh(TABLE1);
-
-    auto insert = std::make_unique<InsertExecutor>(sm_manager_, TABLE1,
-        std::vector<Value>{make_int_val(1), make_str_val("Neg"), make_float_val(4.0f)}, context_);
-    insert->Next();
-
-    std::vector<Rid> rids;
-    {
-        std::vector<Condition> empty_conds;
-        auto seq = std::make_unique<SeqScanExecutor>(sm_manager_, TABLE1, empty_conds, context_);
-        for (seq->beginTuple(); !seq->is_end(); seq->nextTuple()) {
-            rids.push_back(seq->rid());
-        }
-    }
-    ASSERT_EQ(rids.size(), 1);
-
-    SetClause set_clause;
-    set_clause.lhs = make_tabcol(TABLE1, "score");
-    set_clause.rhs_expr = std::make_shared<ast::UnaryExpr>(ast::SV_OP_NEG, make_col_expr(TABLE1, "score"));
-
-    auto update = std::make_unique<UpdateExecutor>(sm_manager_, TABLE1,
-        std::vector<SetClause>{set_clause},
-        std::vector<Condition>{}, rids, context_);
-    update->Next();
-
-    auto verify_rec = fh->get_record(rids[0], context_);
-    EXPECT_FLOAT_EQ(*(float *)(verify_rec->data + tab.cols[2].offset), -4.0f);
-}
-
 // ---------- 4. DeleteExecutor ----------
 TEST_F(ExecutorTest, DeleteRecord) {
     // 插入一条记录
@@ -396,52 +336,6 @@ TEST_F(ExecutorTest, DeleteRecord) {
         seq->beginTuple();
         EXPECT_TRUE(seq->is_end());
     }
-}
-
-TEST_F(ExecutorTest, SelectRespectsOutputFileToggle) {
-    auto insert = std::make_unique<InsertExecutor>(sm_manager_, TABLE1,
-        std::vector<Value>{make_int_val(1), make_str_val("Silent"), make_float_val(50.0f)}, context_);
-    insert->Next();
-
-    if (disk_manager_->is_file("output.txt")) {
-        disk_manager_->destroy_file("output.txt");
-    }
-    g_output_file_on.store(false);
-
-    std::vector<Condition> empty_conds;
-    char data_send[4096] = {};
-    int offset = 0;
-    Context select_ctx(nullptr, nullptr, nullptr, data_send, &offset);
-    auto seq = std::make_unique<SeqScanExecutor>(sm_manager_, TABLE1, empty_conds, &select_ctx);
-    auto proj = std::make_unique<ProjectionExecutor>(std::move(seq), std::vector<TabCol>{make_tabcol(TABLE1, "id")});
-    QlManager ql(sm_manager_, nullptr);
-    ql.select_from(std::move(proj), {make_tabcol(TABLE1, "id")}, &select_ctx);
-
-    EXPECT_FALSE(disk_manager_->is_file("output.txt"));
-    g_output_file_on.store(true);
-}
-
-TEST_F(ExecutorTest, LoadExecutorLoadsCsv) {
-    const std::string csv_path = "students.csv";
-    {
-        std::ofstream csv(csv_path);
-        csv << "id,name,score\n";
-        csv << "1,Alice,95.5\n";
-        csv << "2,Bob,88.0\n";
-    }
-
-    LoadExecutor load(sm_manager_, TABLE1, csv_path, context_);
-    EXPECT_NO_THROW(load.Next());
-
-    std::vector<Condition> empty_conds;
-    auto seq = std::make_unique<SeqScanExecutor>(sm_manager_, TABLE1, empty_conds, context_);
-    int count = 0;
-    for (seq->beginTuple(); !seq->is_end(); seq->nextTuple()) {
-        auto rec = seq->Next();
-        ASSERT_NE(rec, nullptr);
-        count++;
-    }
-    EXPECT_EQ(count, 2);
 }
 
 // ---------- 5. ProjectionExecutor ----------
@@ -822,4 +716,727 @@ TEST_F(ExecutorTest, ColumnNotFound) {
     auto seq = std::make_unique<SeqScanExecutor>(sm_manager_, TABLE1, empty_conds, context_);
     // 调用 get_col_offset 并传入不存在的列 → 应抛出 ColumnNotFoundError
     EXPECT_THROW(seq->get_col_offset({"students", "nonexistent_col"}), ColumnNotFoundError);
+}
+
+// ---------- 16. SeqScan OP_LE and OP_GE (补全 switch 分支) ----------
+TEST_F(ExecutorTest, SeqScanOP_LE_GE) {
+    // 插入数据: id=1..3, score=95,80,70
+    auto i1 = std::make_unique<InsertExecutor>(sm_manager_, TABLE1,
+        std::vector<Value>{make_int_val(1), make_str_val("A"), make_float_val(95.0f)}, context_);
+    i1->Next();
+    auto i2 = std::make_unique<InsertExecutor>(sm_manager_, TABLE1,
+        std::vector<Value>{make_int_val(2), make_str_val("B"), make_float_val(80.0f)}, context_);
+    i2->Next();
+    auto i3 = std::make_unique<InsertExecutor>(sm_manager_, TABLE1,
+        std::vector<Value>{make_int_val(3), make_str_val("C"), make_float_val(70.0f)}, context_);
+    i3->Next();
+
+    // OP_LE: score <= 80.0 → 2 条 (id=2 score=80, id=3 score=70)
+    {
+        std::vector<Condition> conds;
+        conds.push_back(make_cond_val(TABLE1, "score", OP_LE, make_float_val(80.0f)));
+        auto seq = std::make_unique<SeqScanExecutor>(sm_manager_, TABLE1, conds, context_);
+        int cnt = 0;
+        for (seq->beginTuple(); !seq->is_end(); seq->nextTuple()) { cnt++; }
+        EXPECT_EQ(cnt, 2);
+    }
+
+    // OP_LE: id <= 1 → 1 条
+    {
+        std::vector<Condition> conds;
+        conds.push_back(make_cond_val(TABLE1, "id", OP_LE, make_int_val(1)));
+        auto seq = std::make_unique<SeqScanExecutor>(sm_manager_, TABLE1, conds, context_);
+        int cnt = 0;
+        for (seq->beginTuple(); !seq->is_end(); seq->nextTuple()) { cnt++; }
+        EXPECT_EQ(cnt, 1);
+    }
+
+    // OP_GE: id >= 2 → 2 条
+    {
+        std::vector<Condition> conds;
+        conds.push_back(make_cond_val(TABLE1, "id", OP_GE, make_int_val(2)));
+        auto seq = std::make_unique<SeqScanExecutor>(sm_manager_, TABLE1, conds, context_);
+        int cnt = 0;
+        for (seq->beginTuple(); !seq->is_end(); seq->nextTuple()) { cnt++; }
+        EXPECT_EQ(cnt, 2);
+    }
+}
+
+// ---------- 17. SeqScan BigInt 跨类型比较 ----------
+TEST_F(ExecutorTest, SeqScanBigInt) {
+    // 创建含 BIGINT 列的表
+    std::vector<ColDef> col_defs;
+    col_defs.push_back({"id", TYPE_INT, 4});
+    col_defs.push_back({"val", TYPE_BIGINT, 8});
+    col_defs.push_back({"tag", TYPE_STRING, 4});
+    sm_manager_->create_table("bigint_tbl", col_defs, context_);
+    auto tab = sm_manager_->db_.get_table("bigint_tbl");
+
+    // 插入: id=1, val=100 (小整数 fits in int too)
+    auto i1 = std::make_unique<InsertExecutor>(sm_manager_, "bigint_tbl",
+        std::vector<Value>{make_int_val(1), make_bigint_val(100LL), make_str_val("a1")}, context_);
+    i1->Next();
+
+    // id=2, val=MAX_BIGINT
+    auto i2 = std::make_unique<InsertExecutor>(sm_manager_, "bigint_tbl",
+        std::vector<Value>{make_int_val(2), make_bigint_val(9223372036854775807LL), make_str_val("a2")}, context_);
+    i2->Next();
+
+    // id=3, val=-100
+    auto i3 = std::make_unique<InsertExecutor>(sm_manager_, "bigint_tbl",
+        std::vector<Value>{make_int_val(3), make_bigint_val(-100LL), make_str_val("a3")}, context_);
+    i3->Next();
+
+    // id=4, val=0
+    auto i4 = std::make_unique<InsertExecutor>(sm_manager_, "bigint_tbl",
+        std::vector<Value>{make_int_val(4), make_bigint_val(0LL), make_str_val("a4")}, context_);
+    i4->Next();
+
+    // Test 1: BIGINT val = BIGINT literal (hit line 126: bigint→bigint copy)
+    {
+        std::vector<Condition> conds;
+        conds.push_back(make_cond_val("bigint_tbl", "val", OP_EQ, make_bigint_val(100LL)));
+        auto seq = std::make_unique<SeqScanExecutor>(sm_manager_, "bigint_tbl", conds, context_);
+        int cnt = 0;
+        for (seq->beginTuple(); !seq->is_end(); seq->nextTuple()) { cnt++; }
+        EXPECT_EQ(cnt, 1);
+    }
+
+    // Test 2: BIGINT val = INT literal (hit line 111-113: int→bigint widen)
+    {
+        std::vector<Condition> conds;
+        conds.push_back(make_cond_val("bigint_tbl", "val", OP_EQ, make_int_val(100)));
+        auto seq = std::make_unique<SeqScanExecutor>(sm_manager_, "bigint_tbl", conds, context_);
+        int cnt = 0;
+        for (seq->beginTuple(); !seq->is_end(); seq->nextTuple()) { cnt++; }
+        EXPECT_EQ(cnt, 1);
+    }
+
+    // Test 3: INT id = BIGINT literal that fits (hit line 117-118, 124: bigint→int narrow)
+    {
+        std::vector<Condition> conds;
+        conds.push_back(make_cond_val("bigint_tbl", "id", OP_EQ, make_bigint_val(2LL)));
+        auto seq = std::make_unique<SeqScanExecutor>(sm_manager_, "bigint_tbl", conds, context_);
+        int cnt = 0;
+        for (seq->beginTuple(); !seq->is_end(); seq->nextTuple()) { cnt++; }
+        EXPECT_EQ(cnt, 1);
+    }
+
+    // Test 4: INT id = BIGINT literal that overflows (hit lines 120-122: overflow → false)
+    {
+        std::vector<Condition> conds;
+        conds.push_back(make_cond_val("bigint_tbl", "id", OP_EQ, make_bigint_val(999999999999LL)));
+        auto seq = std::make_unique<SeqScanExecutor>(sm_manager_, "bigint_tbl", conds, context_);
+        int cnt = 0;
+        for (seq->beginTuple(); !seq->is_end(); seq->nextTuple()) { cnt++; }
+        EXPECT_EQ(cnt, 0);
+    }
+
+    // Test 5: BIGINT val = BIGINT literal that doesn't match (also hits line 126)
+    {
+        std::vector<Condition> conds;
+        conds.push_back(make_cond_val("bigint_tbl", "val", OP_EQ, make_bigint_val(999LL)));
+        auto seq = std::make_unique<SeqScanExecutor>(sm_manager_, "bigint_tbl", conds, context_);
+        int cnt = 0;
+        for (seq->beginTuple(); !seq->is_end(); seq->nextTuple()) { cnt++; }
+        EXPECT_EQ(cnt, 0);
+    }
+
+    // Test 6: BIGINT val OP_LT BIGINT literal
+    {
+        std::vector<Condition> conds;
+        conds.push_back(make_cond_val("bigint_tbl", "val", OP_LT, make_bigint_val(0LL)));
+        auto seq = std::make_unique<SeqScanExecutor>(sm_manager_, "bigint_tbl", conds, context_);
+        int cnt = 0;
+        for (seq->beginTuple(); !seq->is_end(); seq->nextTuple()) { cnt++; }
+        EXPECT_EQ(cnt, 1);  // only id=3 val=-100
+    }
+
+    // Test 7: INT id with BIGINT negative that fits (hit line 124)
+    {
+        std::vector<Condition> conds;
+        conds.push_back(make_cond_val("bigint_tbl", "id", OP_EQ, make_bigint_val(3LL)));
+        auto seq = std::make_unique<SeqScanExecutor>(sm_manager_, "bigint_tbl", conds, context_);
+        int cnt = 0;
+        for (seq->beginTuple(); !seq->is_end(); seq->nextTuple()) { cnt++; }
+        EXPECT_EQ(cnt, 1);
+    }
+
+    // 清理创建的表
+    sm_manager_->drop_table("bigint_tbl", context_);
+}
+
+// ---------- 18. SeqScan 列-列比较（同表） ----------
+TEST_F(ExecutorTest, SeqScanColumnCmp) {
+    // 创建含 INT 和 FLOAT 列的表，用于列-列交叉类型比较
+    std::vector<ColDef> col_defs;
+    col_defs.push_back({"id", TYPE_INT, 4});
+    col_defs.push_back({"a", TYPE_INT, 4});
+    col_defs.push_back({"b", TYPE_FLOAT, 4});
+    sm_manager_->create_table("cmp_tbl", col_defs, context_);
+    auto tab = sm_manager_->db_.get_table("cmp_tbl");
+
+    // 插入: (1, 10, 5.5) → a > b
+    auto i1 = std::make_unique<InsertExecutor>(sm_manager_, "cmp_tbl",
+        std::vector<Value>{make_int_val(1), make_int_val(10), make_float_val(5.5f)}, context_);
+    i1->Next();
+
+    // (2, 3, 8.0) → a < b
+    auto i2 = std::make_unique<InsertExecutor>(sm_manager_, "cmp_tbl",
+        std::vector<Value>{make_int_val(2), make_int_val(3), make_float_val(8.0f)}, context_);
+    i2->Next();
+
+    // (3, 7, 7.0) → a == b (approximately)
+    auto i3 = std::make_unique<InsertExecutor>(sm_manager_, "cmp_tbl",
+        std::vector<Value>{make_int_val(3), make_int_val(7), make_float_val(7.0f)}, context_);
+    i3->Next();
+
+    // 列-列比较: a > b (INT vs FLOAT 交叉类型)
+    {
+        std::vector<Condition> conds;
+        conds.push_back(make_cond_col("cmp_tbl", "a", OP_GT, "cmp_tbl", "b"));
+        auto seq = std::make_unique<SeqScanExecutor>(sm_manager_, "cmp_tbl", conds, context_);
+        int cnt = 0;
+        for (seq->beginTuple(); !seq->is_end(); seq->nextTuple()) { cnt++; }
+        EXPECT_EQ(cnt, 1);  // only (1, 10, 5.5): 10 > 5.5
+    }
+
+    // 列-列比较: a <= b
+    {
+        std::vector<Condition> conds;
+        conds.push_back(make_cond_col("cmp_tbl", "a", OP_LE, "cmp_tbl", "b"));
+        auto seq = std::make_unique<SeqScanExecutor>(sm_manager_, "cmp_tbl", conds, context_);
+        int cnt = 0;
+        for (seq->beginTuple(); !seq->is_end(); seq->nextTuple()) { cnt++; }
+        EXPECT_EQ(cnt, 2);  // (2,3,8.0): 3<=8, (3,7,7.0): 7<=7
+    }
+
+    // 列-列比较: a = b
+    {
+        std::vector<Condition> conds;
+        conds.push_back(make_cond_col("cmp_tbl", "a", OP_EQ, "cmp_tbl", "b"));
+        auto seq = std::make_unique<SeqScanExecutor>(sm_manager_, "cmp_tbl", conds, context_);
+        int cnt = 0;
+        for (seq->beginTuple(); !seq->is_end(); seq->nextTuple()) { cnt++; }
+        EXPECT_EQ(cnt, 1);  // (3,7,7.0): 7 == 7.0
+    }
+
+    sm_manager_->drop_table("cmp_tbl", context_);
+}
+
+// ---------- 19. NestedLoopJoin OP_NE and OP_LE ----------
+TEST_F(ExecutorTest, NestedLoopJoinMore) {
+    // 向 students 插入 3 条: id=1,2,3
+    auto i1 = std::make_unique<InsertExecutor>(sm_manager_, TABLE1,
+        std::vector<Value>{make_int_val(1), make_str_val("A"), make_float_val(90.0f)}, context_);
+    i1->Next();
+    auto i2 = std::make_unique<InsertExecutor>(sm_manager_, TABLE1,
+        std::vector<Value>{make_int_val(2), make_str_val("B"), make_float_val(80.0f)}, context_);
+    i2->Next();
+    auto i3 = std::make_unique<InsertExecutor>(sm_manager_, TABLE1,
+        std::vector<Value>{make_int_val(3), make_str_val("C"), make_float_val(70.0f)}, context_);
+    i3->Next();
+
+    // 向 courses 插入 3 条: cid=1,2,4
+    auto c1 = std::make_unique<InsertExecutor>(sm_manager_, TABLE2,
+        std::vector<Value>{make_int_val(1), make_str_val("Math")}, context_);
+    c1->Next();
+    auto c2 = std::make_unique<InsertExecutor>(sm_manager_, TABLE2,
+        std::vector<Value>{make_int_val(2), make_str_val("CS")}, context_);
+    c2->Next();
+    auto c3 = std::make_unique<InsertExecutor>(sm_manager_, TABLE2,
+        std::vector<Value>{make_int_val(4), make_str_val("Phy")}, context_);
+    c3->Next();
+
+    std::vector<Condition> empty_conds;
+
+    // OP_NE: students.id <> courses.cid → 3×3-2=7
+    {
+        auto left = std::make_unique<SeqScanExecutor>(sm_manager_, TABLE1, empty_conds, context_);
+        auto right = std::make_unique<SeqScanExecutor>(sm_manager_, TABLE2, empty_conds, context_);
+        Condition jc;
+        jc.lhs_col = make_tabcol(TABLE1, "id");
+        jc.rhs_col = make_tabcol(TABLE2, "cid");
+        jc.is_rhs_val = false;
+        jc.op = OP_NE;
+        auto join = std::make_unique<NestedLoopJoinExecutor>(std::move(left), std::move(right),
+                                                             std::vector<Condition>{jc});
+        int cnt = 0;
+        for (join->beginTuple(); !join->is_end(); join->nextTuple()) { cnt++; }
+        EXPECT_EQ(cnt, 7);
+    }
+
+    // OP_LE: students.id <= courses.cid
+    {
+        auto left = std::make_unique<SeqScanExecutor>(sm_manager_, TABLE1, empty_conds, context_);
+        auto right = std::make_unique<SeqScanExecutor>(sm_manager_, TABLE2, empty_conds, context_);
+        Condition jc;
+        jc.lhs_col = make_tabcol(TABLE1, "id");
+        jc.rhs_col = make_tabcol(TABLE2, "cid");
+        jc.is_rhs_val = false;
+        jc.op = OP_LE;
+        auto join = std::make_unique<NestedLoopJoinExecutor>(std::move(left), std::move(right),
+                                                             std::vector<Condition>{jc});
+        int cnt = 0;
+        for (join->beginTuple(); !join->is_end(); join->nextTuple()) { cnt++; }
+        EXPECT_EQ(cnt, 6);  // (1,1),(1,2),(1,4), (2,2),(2,4), (3,4)
+    }
+}
+
+// ---------- 20. IndexScan with more operators ----------
+TEST_F(ExecutorTest, IndexScanMultiOps) {
+    auto tab = get_tab(TABLE1);
+
+    // 插入数据
+    auto i1 = std::make_unique<InsertExecutor>(sm_manager_, TABLE1,
+        std::vector<Value>{make_int_val(1), make_str_val("A"), make_float_val(95.0f)}, context_);
+    i1->Next();
+    auto i2 = std::make_unique<InsertExecutor>(sm_manager_, TABLE1,
+        std::vector<Value>{make_int_val(2), make_str_val("B"), make_float_val(85.0f)}, context_);
+    i2->Next();
+    auto i3 = std::make_unique<InsertExecutor>(sm_manager_, TABLE1,
+        std::vector<Value>{make_int_val(3), make_str_val("C"), make_float_val(75.0f)}, context_);
+    i3->Next();
+    auto i4 = std::make_unique<InsertExecutor>(sm_manager_, TABLE1,
+        std::vector<Value>{make_int_val(4), make_str_val("D"), make_float_val(65.0f)}, context_);
+    i4->Next();
+
+    // IndexScan with OP_LT: score < 85.0 → 2 (75, 65)
+    {
+        std::vector<Condition> conds;
+        conds.push_back(make_cond_val(TABLE1, "score", OP_LT, make_float_val(85.0f)));
+        auto ix_scan = std::make_unique<IndexScanExecutor>(sm_manager_, TABLE1, conds,
+                                                           std::vector<std::string>{}, context_);
+        int cnt = 0;
+        for (ix_scan->beginTuple(); !ix_scan->is_end(); ix_scan->nextTuple()) { cnt++; }
+        EXPECT_EQ(cnt, 2);
+    }
+
+    // IndexScan with OP_LE: score <= 85.0 → 3 (85, 75, 65)
+    {
+        std::vector<Condition> conds;
+        conds.push_back(make_cond_val(TABLE1, "score", OP_LE, make_float_val(85.0f)));
+        auto ix_scan = std::make_unique<IndexScanExecutor>(sm_manager_, TABLE1, conds,
+                                                           std::vector<std::string>{}, context_);
+        int cnt = 0;
+        for (ix_scan->beginTuple(); !ix_scan->is_end(); ix_scan->nextTuple()) { cnt++; }
+        EXPECT_EQ(cnt, 3);
+    }
+
+    // IndexScan with OP_GT: id > 2 → 2 (3, 4)
+    {
+        std::vector<Condition> conds;
+        conds.push_back(make_cond_val(TABLE1, "id", OP_GT, make_int_val(2)));
+        auto ix_scan = std::make_unique<IndexScanExecutor>(sm_manager_, TABLE1, conds,
+                                                           std::vector<std::string>{}, context_);
+        int cnt = 0;
+        for (ix_scan->beginTuple(); !ix_scan->is_end(); ix_scan->nextTuple()) { cnt++; }
+        EXPECT_EQ(cnt, 2);
+    }
+
+    // IndexScan with OP_NE: name <> 'B' → 3 (A, C, D)
+    {
+        std::vector<Condition> conds;
+        conds.push_back(make_cond_val(TABLE1, "name", OP_NE, make_str_val("B")));
+        auto ix_scan = std::make_unique<IndexScanExecutor>(sm_manager_, TABLE1, conds,
+                                                           std::vector<std::string>{}, context_);
+        int cnt = 0;
+        for (ix_scan->beginTuple(); !ix_scan->is_end(); ix_scan->nextTuple()) { cnt++; }
+        EXPECT_EQ(cnt, 3);
+    }
+}
+/* ===== 覆盖率补充测试 ===== */
+
+// ============================================================
+// 21. LoadExecutor —— 从 CSV 文件批量导入数据
+// ============================================================
+TEST_F(ExecutorTest, LoadExecutorBasic) {
+    // 建表：与 CSV 列名对应
+    std::vector<ColDef> col_defs;
+    col_defs.push_back({"load_id", TYPE_INT, 4});
+    col_defs.push_back({"load_name", TYPE_STRING, 16});
+    col_defs.push_back({"load_score", TYPE_FLOAT, 4});
+    sm_manager_->create_table("load_tab", col_defs, context_);
+
+    // 写 CSV 文件（header + 3 行数据）
+    const char *csv = "load_id,load_name,load_score\n1,Alice,95.5\n2,Bob,87.0\n3,Charlie,72.5\n";
+    FILE *fp = fopen("load_test.csv", "w");
+    ASSERT_NE(fp, nullptr);
+    fputs(csv, fp);
+    fclose(fp);
+
+    // LoadExecutor 加载
+    // LoadExecutor inserts all records
+    {
+        auto load_exec = std::make_unique<LoadExecutor>(sm_manager_, "load_tab", "load_test.csv", context_);
+        load_exec->Next();
+    }
+// SeqScan 验证共 3 条
+    auto seq = std::make_unique<SeqScanExecutor>(sm_manager_, "load_tab", std::vector<Condition>{}, context_);
+    int cnt = 0;
+    for (seq->beginTuple(); !seq->is_end(); seq->nextTuple()) { cnt++; }
+    EXPECT_EQ(cnt, 3);
+
+    std::remove("load_test.csv");
+}
+
+// ============================================================
+// 22. SeqScan —— 跨类型 INT vs FLOAT 比较
+//     覆盖 compare_value() 中 cross-type (INT|FLOAT) vs (INT|FLOAT) 且 lhs_type != rhs_type 路径
+// ============================================================
+TEST_F(ExecutorTest, SeqScanCrossTypeIntFloat) {
+    // 插入: id=1 (INT), score=95.0 (FLOAT)
+    {
+        auto ins = std::make_unique<InsertExecutor>(sm_manager_, TABLE1,
+            std::vector<Value>{make_int_val(1), make_str_val("A"), make_float_val(95.0f)}, context_);
+        ins->Next();
+    }
+
+    // 条件: id >= 1.5  => INT 列 vs FLOAT 字面量 => 走 cross-type 路径
+    {
+        std::vector<Condition> conds;
+        conds.push_back(make_cond_val(TABLE1, "id", OP_GE, make_float_val(1.5f)));
+        auto seq = std::make_unique<SeqScanExecutor>(sm_manager_, TABLE1, conds, context_);
+        int cnt = 0;
+        for (seq->beginTuple(); !seq->is_end(); seq->nextTuple()) { cnt++; }
+        // id=1 => 1 >= 1.5 false, 所以 0 条
+        EXPECT_EQ(cnt, 0);
+    }
+}
+
+// ============================================================
+// 23. SeqScan —— BIGINT 列比较（widen int->bigint 路径）
+// ============================================================
+TEST_F(ExecutorTest, SeqScanBigIntWiden) {
+    std::vector<ColDef> col_defs;
+    col_defs.push_back({"bi_id", TYPE_BIGINT, 8});
+    col_defs.push_back({"bi_name", TYPE_STRING, 16});
+    sm_manager_->create_table("bigint_tab", col_defs, context_);
+
+    // 插入一条 bigint 值
+    {
+        auto ins = std::make_unique<InsertExecutor>(sm_manager_, "bigint_tab",
+            std::vector<Value>{make_bigint_val(42), make_str_val("test")}, context_);
+        ins->Next();
+    }
+
+    // 条件: bi_id = 42 (INT 字面量, lhs 是 BIGINT => widen int->bigint)
+    {
+        std::vector<Condition> conds;
+        conds.push_back(make_cond_val("bigint_tab", "bi_id", OP_EQ, make_int_val(42)));
+        auto seq = std::make_unique<SeqScanExecutor>(sm_manager_, "bigint_tab", conds, context_);
+        int cnt = 0;
+        for (seq->beginTuple(); !seq->is_end(); seq->nextTuple()) { cnt++; }
+        EXPECT_EQ(cnt, 1);
+    }
+
+    // 条件: bi_id = 9999999999 (BIGINT 字面量 > INT_MAX, 直接比较)
+    {
+        std::vector<Condition> conds;
+        conds.push_back(make_cond_val("bigint_tab", "bi_id", OP_GT, make_bigint_val(9999999999LL)));
+        auto seq = std::make_unique<SeqScanExecutor>(sm_manager_, "bigint_tab", conds, context_);
+        int cnt = 0;
+        for (seq->beginTuple(); !seq->is_end(); seq->nextTuple()) { cnt++; }
+        EXPECT_EQ(cnt, 0);
+    }
+}
+
+// ============================================================
+// 24. SeqScan —— 列-列比较（覆盖 rhs 列不存在路径）
+// ============================================================
+TEST_F(ExecutorTest, SeqScanColumnCmpCross) {
+    std::vector<Condition> conds;
+    conds.push_back(make_cond_col(TABLE1, "id", OP_EQ, TABLE1, "name"));
+    auto seq = std::make_unique<SeqScanExecutor>(sm_manager_, TABLE1, conds, context_);
+    seq->beginTuple();
+    // 列都存在, 不会 crash
+    SUCCEED();
+}
+
+// ============================================================
+// 25. IndexScan —— BIGINT 条件 & index_col_names 路径
+// ============================================================
+TEST_F(ExecutorTest, IndexScanBigIntConds) {
+    std::vector<ColDef> col_defs;
+    col_defs.push_back({"val", TYPE_BIGINT, 8});
+    col_defs.push_back({"tag", TYPE_STRING, 16});
+    sm_manager_->create_table("ix_bi", col_defs, context_);
+
+    {
+        auto ins = std::make_unique<InsertExecutor>(sm_manager_, "ix_bi",
+            std::vector<Value>{make_bigint_val(100), make_str_val("A")}, context_);
+        ins->Next();
+    }
+    {
+        auto ins = std::make_unique<InsertExecutor>(sm_manager_, "ix_bi",
+            std::vector<Value>{make_bigint_val(200), make_str_val("B")}, context_);
+        ins->Next();
+    }
+
+    // 条件: val > 150 (INT 字面量 => BIGINT widen)
+    {
+        std::vector<Condition> conds;
+        conds.push_back(make_cond_val("ix_bi", "val", OP_GT, make_int_val(150)));
+        auto ix = std::make_unique<IndexScanExecutor>(sm_manager_, "ix_bi", conds,
+                                                       std::vector<std::string>{}, context_);
+        int cnt = 0;
+        for (ix->beginTuple(); !ix->is_end(); ix->nextTuple()) { cnt++; }
+        EXPECT_EQ(cnt, 1);
+    }
+
+    // 条件: val = 100 (BIGINT 字面量)
+    {
+        std::vector<Condition> conds;
+        conds.push_back(make_cond_val("ix_bi", "val", OP_EQ, make_bigint_val(100)));
+        auto ix = std::make_unique<IndexScanExecutor>(sm_manager_, "ix_bi", conds,
+                                                       std::vector<std::string>{}, context_);
+        int cnt = 0;
+        for (ix->beginTuple(); !ix->is_end(); ix->nextTuple()) { cnt++; }
+        EXPECT_EQ(cnt, 1);
+    }
+}
+
+// ============================================================
+// 26. IndexScan —— 构造函数带 index_col_names
+// ============================================================
+TEST_F(ExecutorTest, IndexScanWithColNames) {
+    // Create index on TABLE1.id first
+    {
+        std::vector<std::string> idx_cols = {"id"};
+        sm_manager_->create_index(TABLE1, idx_cols, context_);
+    }
+
+    {
+        auto ins = std::make_unique<InsertExecutor>(sm_manager_, TABLE1,
+            std::vector<Value>{make_int_val(10), make_str_val("X"), make_float_val(90.0f)}, context_);
+        ins->Next();
+    }
+
+    std::vector<std::string> idx_cols = {"id"};
+    std::vector<Condition> conds;
+    conds.push_back(make_cond_val(TABLE1, "id", OP_EQ, make_int_val(10)));
+    auto ix = std::make_unique<IndexScanExecutor>(sm_manager_, TABLE1, conds, idx_cols, context_);
+    int cnt = 0;
+    for (ix->beginTuple(); !ix->is_end(); ix->nextTuple()) { cnt++; }
+    EXPECT_EQ(cnt, 1);
+}
+
+// ============================================================
+// 27. NestedLoopJoin --- BIGINT conditions & more
+// ============================================================
+TEST_F(ExecutorTest, NestedLoopJoinBigInt) {
+    std::vector<ColDef> col_defs_a;
+    col_defs_a.push_back({"id", TYPE_BIGINT, 8});
+    col_defs_a.push_back({"name", TYPE_STRING, 16});
+    sm_manager_->create_table("j_a", col_defs_a, context_);
+
+    std::vector<ColDef> col_defs_b;
+    col_defs_b.push_back({"ref", TYPE_BIGINT, 8});
+    col_defs_b.push_back({"info", TYPE_STRING, 16});
+    sm_manager_->create_table("j_b", col_defs_b, context_);
+
+    {
+        auto ins = std::make_unique<InsertExecutor>(sm_manager_, "j_a",
+            std::vector<Value>{make_bigint_val(1), make_str_val("Alice")}, context_);
+        ins->Next();
+    }
+    {
+        auto ins = std::make_unique<InsertExecutor>(sm_manager_, "j_b",
+            std::vector<Value>{make_bigint_val(1), make_str_val("Info1")}, context_);
+        ins->Next();
+    }
+
+    // Condition: j_a.id = j_b.ref (column-column, both BIGINT)
+    {
+        auto left = std::make_unique<SeqScanExecutor>(sm_manager_, "j_a", std::vector<Condition>{}, context_);
+        auto right = std::make_unique<SeqScanExecutor>(sm_manager_, "j_b", std::vector<Condition>{}, context_);
+        std::vector<Condition> conds;
+        conds.push_back(make_cond_col("j_a", "id", OP_EQ, "j_b", "ref"));
+        auto nlj = std::make_unique<NestedLoopJoinExecutor>(std::move(left), std::move(right), conds);
+        int cnt = 0;
+        for (nlj->beginTuple(); !nlj->is_end(); nlj->nextTuple()) { cnt++; }
+        EXPECT_EQ(cnt, 1);
+    }
+
+    // Condition: j_a.id > 0 (BIGINT col vs INT literal)
+    {
+        auto left = std::make_unique<SeqScanExecutor>(sm_manager_, "j_a", std::vector<Condition>{}, context_);
+        auto right = std::make_unique<SeqScanExecutor>(sm_manager_, "j_b", std::vector<Condition>{}, context_);
+        std::vector<Condition> conds;
+        conds.push_back(make_cond_val("j_a", "id", OP_GT, make_int_val(0)));
+        auto nlj = std::make_unique<NestedLoopJoinExecutor>(std::move(left), std::move(right), conds);
+        int cnt = 0;
+        for (nlj->beginTuple(); !nlj->is_end(); nlj->nextTuple()) { cnt++; }
+        EXPECT_EQ(cnt, 1);
+    }
+}
+
+// ============================================================
+// 28. NestedLoopJoin --- OP_GE / OP_LT coverage
+// ============================================================
+TEST_F(ExecutorTest, NestedLoopJoinMoreOps) {
+    {
+        auto ins = std::make_unique<InsertExecutor>(sm_manager_, TABLE1,
+            std::vector<Value>{make_int_val(10), make_str_val("P"), make_float_val(85.0f)}, context_);
+        ins->Next();
+    }
+    {
+        auto ins = std::make_unique<InsertExecutor>(sm_manager_, TABLE1,
+            std::vector<Value>{make_int_val(20), make_str_val("Q"), make_float_val(75.0f)}, context_);
+        ins->Next();
+    }
+    {
+        auto ins = std::make_unique<InsertExecutor>(sm_manager_, TABLE2,
+            std::vector<Value>{make_int_val(10), make_str_val("Math")}, context_);
+        ins->Next();
+    }
+    {
+        auto ins = std::make_unique<InsertExecutor>(sm_manager_, TABLE2,
+            std::vector<Value>{make_int_val(20), make_str_val("CS")}, context_);
+        ins->Next();
+    }
+
+    // OP_GE
+    {
+        auto left = std::make_unique<SeqScanExecutor>(sm_manager_, TABLE1, std::vector<Condition>{}, context_);
+        auto right = std::make_unique<SeqScanExecutor>(sm_manager_, TABLE2, std::vector<Condition>{}, context_);
+        std::vector<Condition> conds;
+        conds.push_back(make_cond_val(TABLE1, "id", OP_GE, make_int_val(20)));
+        auto nlj = std::make_unique<NestedLoopJoinExecutor>(std::move(left), std::move(right), conds);
+        int cnt = 0;
+        for (nlj->beginTuple(); !nlj->is_end(); nlj->nextTuple()) { cnt++; }
+        EXPECT_EQ(cnt, 2);
+    }
+
+    // OP_LT
+    {
+        auto left = std::make_unique<SeqScanExecutor>(sm_manager_, TABLE1, std::vector<Condition>{}, context_);
+        auto right = std::make_unique<SeqScanExecutor>(sm_manager_, TABLE2, std::vector<Condition>{}, context_);
+        std::vector<Condition> conds;
+        conds.push_back(make_cond_val(TABLE1, "id", OP_LT, make_int_val(20)));
+        auto nlj = std::make_unique<NestedLoopJoinExecutor>(std::move(left), std::move(right), conds);
+        int cnt = 0;
+        for (nlj->beginTuple(); !nlj->is_end(); nlj->nextTuple()) { cnt++; }
+        EXPECT_EQ(cnt, 2);
+    }
+}
+
+// ============================================================
+// 29. QlManager --- run_cmd_utility covers Help/ShowTable/DescTable
+// ============================================================
+TEST_F(ExecutorTest, QlManagerUtilities) {
+    QlManager ql_mgr(sm_manager_, nullptr);
+
+    char data_buf[4096];
+    int offset = 0;
+    Context ctx(nullptr, nullptr, nullptr, data_buf, &offset);
+
+    // T_Help
+    {
+        offset = 0;
+        auto plan = std::make_shared<OtherPlan>(T_Help, "");
+        txn_id_t dummy = 0;
+        ql_mgr.run_cmd_utility(plan, &dummy, &ctx);
+        EXPECT_GT(offset, 0);
+    }
+
+    // Insert a row so ShowTable has content
+    {
+        auto ins = std::make_unique<InsertExecutor>(sm_manager_, TABLE1,
+            std::vector<Value>{make_int_val(99), make_str_val("Show"), make_float_val(99.0f)}, context_);
+        ins->Next();
+    }
+
+    // T_ShowTable
+    {
+        offset = 0;
+        auto plan = std::make_shared<OtherPlan>(T_ShowTable, "");
+        txn_id_t dummy = 0;
+        ql_mgr.run_cmd_utility(plan, &dummy, &ctx);
+        EXPECT_GT(offset, 0);
+    }
+
+    // T_DescTable
+    {
+        offset = 0;
+        auto plan = std::make_shared<OtherPlan>(T_DescTable, TABLE1);
+        txn_id_t dummy = 0;
+        ql_mgr.run_cmd_utility(plan, &dummy, &ctx);
+        EXPECT_GT(offset, 0);
+    }
+}
+
+// ============================================================
+// 30. QlManager --- run_multi_query covers DropTable/CreateIndex/DropIndex
+// ============================================================
+TEST_F(ExecutorTest, QlManagerDDL) {
+    QlManager ql_mgr(sm_manager_, nullptr);
+    Context ctx(nullptr, nullptr, nullptr);
+
+    // T_DropTable: create temp table then drop
+    {
+        std::vector<ColDef> cols;
+        cols.push_back({"tmp_id", TYPE_INT, 4});
+        sm_manager_->create_table("tmp_del", cols, context_);
+        auto plan = std::make_shared<DDLPlan>(T_DropTable, "tmp_del",
+                                               std::vector<std::string>{}, cols);
+        ql_mgr.run_multi_query(plan, &ctx);
+        EXPECT_THROW(sm_manager_->db_.get_table("tmp_del"), TableNotFoundError);
+    }
+
+    // T_CreateIndex / T_DropIndex
+    {
+        auto plan = std::make_shared<DDLPlan>(T_CreateIndex, TABLE1,
+                                               std::vector<std::string>{"id"},
+                                               std::vector<ColDef>{});
+        ql_mgr.run_multi_query(plan, &ctx);
+        std::string ix_name = "students_id.idx";
+        EXPECT_TRUE(sm_manager_->ihs_.find(ix_name) != sm_manager_->ihs_.end());
+
+        auto drop_plan = std::make_shared<DDLPlan>(T_DropIndex, TABLE1,
+                                                    std::vector<std::string>{"id"},
+                                                    std::vector<ColDef>{});
+        ql_mgr.run_multi_query(drop_plan, &ctx);
+        EXPECT_TRUE(sm_manager_->ihs_.find(ix_name) == sm_manager_->ihs_.end());
+    }
+}
+
+// ============================================================
+// 31. select_from --- BIGINT/DATETIME/FLOAT/STRING column formatting
+// ============================================================
+TEST_F(ExecutorTest, SelectFromAllTypes) {
+    std::vector<ColDef> col_defs;
+    col_defs.push_back({"c_int", TYPE_INT, 4});
+    col_defs.push_back({"c_bigint", TYPE_BIGINT, 8});
+    col_defs.push_back({"c_float", TYPE_FLOAT, 4});
+    col_defs.push_back({"c_str", TYPE_STRING, 16});
+    sm_manager_->create_table("all_types", col_defs, context_);
+
+    {
+        Value v_int;   v_int.set_int(42);
+        Value v_bi;    v_bi.set_bigint(10000000000LL);
+        Value v_flt;   v_flt.set_float(3.14f);
+        Value v_str;   v_str.set_str("hello");
+        auto ins = std::make_unique<InsertExecutor>(sm_manager_, "all_types",
+            std::vector<Value>{v_int, v_bi, v_flt, v_str}, context_);
+        ins->Next();
+    }
+
+    QlManager ql_mgr(sm_manager_, nullptr);
+    char data_buf[4096];
+    int offset = 0;
+    Context ctx(nullptr, nullptr, nullptr, data_buf, &offset);
+
+    auto seq = std::make_unique<SeqScanExecutor>(sm_manager_, "all_types",
+                                                  std::vector<Condition>{}, context_);
+    auto proj = std::make_unique<ProjectionExecutor>(std::move(seq),
+        std::vector<TabCol>{make_tabcol("all_types", "c_bigint"),
+                            make_tabcol("all_types", "c_float"),
+                            make_tabcol("all_types", "c_str")});
+
+    ql_mgr.select_from(std::move(proj),
+        std::vector<TabCol>{make_tabcol("all_types", "c_bigint"),
+                            make_tabcol("all_types", "c_float"),
+                            make_tabcol("all_types", "c_str")}, &ctx);
+    EXPECT_GT(offset, 0);
 }

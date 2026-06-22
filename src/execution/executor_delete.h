@@ -51,7 +51,7 @@ class DeleteExecutor : public AbstractExecutor {
 
                 auto key = std::make_unique<char[]>(index.col_tot_len);
                 int offset = 0;
-                for (size_t k = 0; k < index.col_num; ++k) {
+                for (size_t k = 0; k < (size_t)index.col_num; ++k) {
                     memcpy(key.get() + offset, rec->data + index.cols[k].offset, index.cols[k].len);
                     offset += index.cols[k].len;
                 }

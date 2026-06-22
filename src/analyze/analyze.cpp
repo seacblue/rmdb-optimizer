@@ -10,6 +10,8 @@ See the Mulan PSL v2 for more details. */
 
 #include "analyze.h"
 
+#include <climits>
+
 /**
  * @description: 分析器，进行语义分析和查询重写，需要检查不符合语义规定的部分
  * @param {shared_ptr<ast::TreeNode>} parse parser生成的结果集
@@ -183,11 +185,22 @@ void Analyze::check_clause(const std::vector<std::string> &tab_names, std::vecto
             auto rhs_col = rhs_tab.get_col(cond.rhs_col.col_name);
             rhs_type = rhs_col->type;
         }
-        bool numeric_compatible =
-            (lhs_type == TYPE_INT || lhs_type == TYPE_FLOAT) &&
-            (rhs_type == TYPE_INT || rhs_type == TYPE_FLOAT);
-        if (lhs_type != rhs_type && !numeric_compatible) {
-            throw IncompatibleTypeError(coltype2str(lhs_type), coltype2str(rhs_type));
+        if (lhs_type != rhs_type) {
+            // Allow INT ↔ BIGINT comparison (implicit type conversion)
+            bool both_int_types = (lhs_type == TYPE_INT || lhs_type == TYPE_BIGINT) &&
+                                  (rhs_type == TYPE_INT || rhs_type == TYPE_BIGINT);
+            // Allow STRING → DATETIME comparison (datetime value from string literal)
+            bool string_to_datetime = (lhs_type == TYPE_DATETIME && rhs_type == TYPE_STRING);
+            if (!both_int_types && !string_to_datetime) {
+                throw IncompatibleTypeError(coltype2str(lhs_type), coltype2str(rhs_type));
+            }
+            // Convert string value to DATETIME internal encoding
+            if (string_to_datetime) {
+                if (!validate_datetime_str(cond.rhs_val.str_val)) {
+                    throw InvalidDatetimeError(cond.rhs_val.str_val);
+                }
+                cond.rhs_val.set_datetime(datetime_str_to_int64(cond.rhs_val.str_val));
+            }
         }
         if (cond.is_rhs_val && lhs_type == rhs_type) {
             cond.rhs_val.init_raw(lhs_col->len);
@@ -199,7 +212,12 @@ void Analyze::check_clause(const std::vector<std::string> &tab_names, std::vecto
 Value Analyze::convert_sv_value(const std::shared_ptr<ast::Value> &sv_val) {
     Value val;
     if (auto int_lit = std::dynamic_pointer_cast<ast::IntLit>(sv_val)) {
-        val.set_int(int_lit->val);
+        // Check if the value fits in int32 range; if not, treat as BIGINT
+        if (int_lit->val >= INT_MIN && int_lit->val <= INT_MAX) {
+            val.set_int(static_cast<int>(int_lit->val));
+        } else {
+            val.set_bigint(int_lit->val);
+        }
     } else if (auto float_lit = std::dynamic_pointer_cast<ast::FloatLit>(sv_val)) {
         val.set_float(float_lit->val);
     } else if (auto str_lit = std::dynamic_pointer_cast<ast::StringLit>(sv_val)) {
