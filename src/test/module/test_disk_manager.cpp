@@ -123,10 +123,12 @@ TEST_F(DiskManagerTest, OpenFile) {
     const std::string path = "test_open.db";
     dm_->create_file(path);
 
-    int fd1 = dm_->open_file(path);
+    dm_->open_file(path);
+    int fd1 = dm_->get_file_fd(path);
     EXPECT_GE(fd1, 0);
 
-    int fd2 = dm_->open_file(path);
+    dm_->open_file(path);
+    int fd2 = dm_->get_file_fd(path);
     EXPECT_EQ(fd1, fd2);
 }
 
@@ -136,19 +138,21 @@ TEST_F(DiskManagerTest, OpenFile) {
 TEST_F(DiskManagerTest, CloseFile) {
     const std::string path = "test_close.db";
     dm_->create_file(path);
-    int fd = dm_->open_file(path);
-    dm_->close_file(fd);
+    dm_->open_file(path);
+    int fd = dm_->get_file_fd(path);
+    dm_->close_file(path);
 
-    int fd2 = dm_->open_file(path);
+    dm_->open_file(path);
+    int fd2 = dm_->get_file_fd(path);
     EXPECT_GE(fd2, 0);
-    dm_->close_file(fd2);
+    dm_->close_file(path);
 }
 
 /**
  * @test 关闭未打开的文件 → 抛 FileNotOpenError
  */
 TEST_F(DiskManagerTest, CloseNotOpenFile) {
-    EXPECT_THROW(dm_->close_file(9999), FileNotOpenError);
+    EXPECT_THROW(dm_->close_file("not_opened.db"), FileNotOpenError);
 }
 
 /**
@@ -158,7 +162,8 @@ TEST_F(DiskManagerTest, CloseNotOpenFile) {
 TEST_F(DiskManagerTest, WriteReadPage) {
     const std::string path = "test_rw.db";
     dm_->create_file(path);
-    int fd = dm_->open_file(path);
+    dm_->open_file(path);
+    int fd = dm_->get_file_fd(path);
 
     char write_buf[PAGE_SIZE];
     char read_buf[PAGE_SIZE];
@@ -169,7 +174,7 @@ TEST_F(DiskManagerTest, WriteReadPage) {
 
     EXPECT_EQ(0, memcmp(write_buf, read_buf, PAGE_SIZE));
 
-    dm_->close_file(fd);
+    dm_->close_file(path);
 }
 
 /**
@@ -179,7 +184,8 @@ TEST_F(DiskManagerTest, WriteReadPage) {
 TEST_F(DiskManagerTest, MultiplePages) {
     const std::string path = "test_mp.db";
     dm_->create_file(path);
-    int fd = dm_->open_file(path);
+    dm_->open_file(path);
+    int fd = dm_->get_file_fd(path);
 
     constexpr int NUM_PAGES = 16;
     char pages[NUM_PAGES][PAGE_SIZE];
@@ -195,7 +201,7 @@ TEST_F(DiskManagerTest, MultiplePages) {
         EXPECT_EQ(0, memcmp(pages[i], buf, PAGE_SIZE));
     }
 
-    dm_->close_file(fd);
+    dm_->close_file(path);
 }
 
 /**
@@ -204,13 +210,14 @@ TEST_F(DiskManagerTest, MultiplePages) {
 TEST_F(DiskManagerTest, AllocatePage) {
     const std::string path = "test_alloc.db";
     dm_->create_file(path);
-    int fd = dm_->open_file(path);
+    dm_->open_file(path);
+    int fd = dm_->get_file_fd(path);
 
     EXPECT_EQ(0, dm_->allocate_page(fd));
     EXPECT_EQ(1, dm_->allocate_page(fd));
     EXPECT_EQ(2, dm_->allocate_page(fd));
 
-    dm_->close_file(fd);
+    dm_->close_file(path);
 }
 
 /**
@@ -220,7 +227,8 @@ TEST_F(DiskManagerTest, AllocatePage) {
 TEST_F(DiskManagerTest, FileSize) {
     const std::string path = "test_size.db";
     dm_->create_file(path);
-    int fd = dm_->open_file(path);
+    dm_->open_file(path);
+    int fd = dm_->get_file_fd(path);
 
     EXPECT_EQ(0, dm_->get_file_size(path));
 
@@ -230,7 +238,7 @@ TEST_F(DiskManagerTest, FileSize) {
 
     EXPECT_EQ(PAGE_SIZE, dm_->get_file_size(path));
 
-    dm_->close_file(fd);
+    dm_->close_file(path);
 }
 
 /**
@@ -239,8 +247,8 @@ TEST_F(DiskManagerTest, FileSize) {
 TEST_F(DiskManagerTest, DestroyFile) {
     const std::string path = "test_destroy.db";
     dm_->create_file(path);
-    int fd = dm_->open_file(path);
-    dm_->close_file(fd);
+    dm_->open_file(path);
+    dm_->close_file(path);
     dm_->destroy_file(path);
     EXPECT_FALSE(dm_->is_file(path));
 }
@@ -269,12 +277,13 @@ TEST_F(DiskManagerTest, DestroyNonExistent) {
 TEST_F(DiskManagerTest, FileNameFdMapping) {
     const std::string path = "test_map.db";
     dm_->create_file(path);
-    int fd = dm_->open_file(path);
+    dm_->open_file(path);
+    int fd = dm_->get_file_fd(path);
 
     EXPECT_EQ(path, dm_->get_file_name(fd));
     EXPECT_EQ(fd, dm_->get_file_fd(path));
 
-    dm_->close_file(fd);
+    dm_->close_file(path);
 }
 
 // ============================================================

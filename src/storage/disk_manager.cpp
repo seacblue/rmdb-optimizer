@@ -33,6 +33,15 @@ void DiskManager::write_page(int fd, page_id_t page_no, const char *offset, int 
     if (bytes_written != num_bytes) {
         throw InternalError("DiskManager::write_page Error");
     }
+    // 若写入不足一整页，用 ftruncate 将文件扩展到完整页边界
+    // 使后续 read_page(PAGE_SIZE) 能成功读取（未写入部分自动补零）
+    off_t page_end = offset_bytes + PAGE_SIZE;
+    off_t cur_size = lseek(fd, 0, SEEK_END);
+    if (cur_size < page_end) {
+        if (ftruncate(fd, page_end) < 0) {
+            throw InternalError("DiskManager::write_page Error");
+        }
+    }
 }
 
 /**
@@ -132,14 +141,13 @@ void DiskManager::destroy_file(const std::string &path) {
 
 
 /**
- * @description: 打开指定路径文件 
- * @return {int} 返回打开的文件的文件句柄
+ * @description: 打开指定路径文件
  * @param {string} &path 文件所在路径
  */
-int DiskManager::open_file(const std::string &path) {
+void DiskManager::open_file(const std::string &path) {
     auto it = path2fd_.find(path);
     if (it != path2fd_.end()) {
-        return it->second;
+        return;
     }
     if (!is_file(path)) {
         throw FileNotFoundError(path);
@@ -150,22 +158,22 @@ int DiskManager::open_file(const std::string &path) {
     }
     path2fd_[path] = fd;
     fd2path_[fd] = path;
-    return fd;
 }
 
 /**
- * @description:用于关闭指定路径文件 
- * @param {int} fd 打开的文件的文件句柄
+ * @description: 关闭指定路径文件
+ * @param {string} &path 文件所在路径
  */
-void DiskManager::close_file(int fd) {
-    if (!fd2path_.count(fd)) {
-        throw FileNotOpenError(fd);
+void DiskManager::close_file(const std::string &path) {
+    auto it = path2fd_.find(path);
+    if (it == path2fd_.end()) {
+        throw FileNotOpenError();
     }
+    int fd = it->second;
     if (close(fd) < 0) {
         throw UnixError();
     }
-    std::string path = fd2path_[fd];
-    path2fd_.erase(path);
+    path2fd_.erase(it);
     fd2path_.erase(fd);
 }
 
@@ -199,10 +207,20 @@ std::string DiskManager::get_file_name(int fd) {
  * @param {string} &file_name 文件名
  */
 int DiskManager::get_file_fd(const std::string &file_name) {
-    if (!path2fd_.count(file_name)) {
-        return open_file(file_name);
+    auto it = path2fd_.find(file_name);
+    if (it != path2fd_.end()) {
+        return it->second;
     }
-    return path2fd_[file_name];
+    if (!is_file(file_name)) {
+        throw FileNotFoundError(file_name);
+    }
+    int fd = open(file_name.c_str(), O_RDWR);
+    if (fd < 0) {
+        throw UnixError();
+    }
+    path2fd_[file_name] = fd;
+    fd2path_[fd] = file_name;
+    return fd;
 }
 
 
@@ -216,7 +234,8 @@ int DiskManager::get_file_fd(const std::string &file_name) {
 int DiskManager::read_log(char *log_data, int size, int offset) {
     // read log file from the previous end
     if (log_fd_ == -1) {
-        log_fd_ = open_file(LOG_FILE_NAME);
+        open_file(LOG_FILE_NAME);
+        log_fd_ = get_file_fd(LOG_FILE_NAME);
     }
     int file_size = get_file_size(LOG_FILE_NAME);
     if (offset > file_size) {
@@ -239,7 +258,8 @@ int DiskManager::read_log(char *log_data, int size, int offset) {
  */
 void DiskManager::write_log(char *log_data, int size) {
     if (log_fd_ == -1) {
-        log_fd_ = open_file(LOG_FILE_NAME);
+        open_file(LOG_FILE_NAME);
+        log_fd_ = get_file_fd(LOG_FILE_NAME);
     }
 
     // write from the file_end

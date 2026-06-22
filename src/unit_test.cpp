@@ -155,7 +155,7 @@ std::ostream &operator<<(std::ostream &os, const Rid &rid) {
 class BigStorageTest : public ::testing::Test {
    public:
     std::unique_ptr<DiskManager> disk_manager_;
-    int fd_ = -1;  // 此文件描述符为disk_manager_->open_file的返回值
+    int fd_ = -1;  // 此文件描述符为disk_manager_->get_file_fd的返回值
 
    public:
     // This function is called before every test.
@@ -180,13 +180,14 @@ class BigStorageTest : public ::testing::Test {
         disk_manager_->create_file(TEST_FILE_NAME_BIG);
         assert(disk_manager_->is_file(TEST_FILE_NAME_BIG));
         // 打开测试文件
-        fd_ = disk_manager_->open_file(TEST_FILE_NAME_BIG);
+        disk_manager_->open_file(TEST_FILE_NAME_BIG);
+        fd_ = disk_manager_->get_file_fd(TEST_FILE_NAME_BIG);
         assert(fd_ != -1);
     }
 
     // This function is called after every test.
     void TearDown() override {
-        disk_manager_->close_file(fd_);
+        disk_manager_->close_file(TEST_FILE_NAME_BIG);
         // disk_manager_->destroy_file(TEST_FILE_NAME_BIG);  // you can choose to delete the file
 
         // 返回上一层目录
@@ -243,7 +244,7 @@ TEST(LRUReplacerTest, SampleTest) {
 class BufferPoolManagerTest : public ::testing::Test {
    public:
     std::unique_ptr<DiskManager> disk_manager_;
-    int fd_ = -1;  // 此文件描述符为disk_manager_->open_file的返回值
+    int fd_ = -1;  // 此文件描述符为disk_manager_->get_file_fd的返回值
 
    public:
     // This function is called before every test.
@@ -268,13 +269,14 @@ class BufferPoolManagerTest : public ::testing::Test {
         disk_manager_->create_file(TEST_FILE_NAME);
         assert(disk_manager_->is_file(TEST_FILE_NAME));
         // 打开测试文件
-        fd_ = disk_manager_->open_file(TEST_FILE_NAME);
+        disk_manager_->open_file(TEST_FILE_NAME);
+        fd_ = disk_manager_->get_file_fd(TEST_FILE_NAME);
         assert(fd_ != -1);
     }
 
     // This function is called after every test.
     void TearDown() override {
-        disk_manager_->close_file(fd_);
+        disk_manager_->close_file(TEST_FILE_NAME);
         // disk_manager_->destroy_file(TEST_FILE_NAME);  // you can choose to delete the file
 
         // 返回上一层目录
@@ -342,7 +344,7 @@ TEST_F(BufferPoolManagerTest, SampleTest) {
 class BufferPoolManagerConcurrencyTest : public ::testing::Test {
    public:
     std::unique_ptr<DiskManager> disk_manager_;
-    int fd_ = -1;  // 此文件描述符为disk_manager_->open_file的返回值
+    int fd_ = -1;  // 此文件描述符为disk_manager_->get_file_fd的返回值
 
    public:
     // This function is called before every test.
@@ -367,13 +369,14 @@ class BufferPoolManagerConcurrencyTest : public ::testing::Test {
         disk_manager_->create_file(TEST_FILE_NAME_CCUR);
         assert(disk_manager_->is_file(TEST_FILE_NAME_CCUR));
         // 打开测试文件
-        fd_ = disk_manager_->open_file(TEST_FILE_NAME_CCUR);
+        disk_manager_->open_file(TEST_FILE_NAME_CCUR);
+        fd_ = disk_manager_->get_file_fd(TEST_FILE_NAME_CCUR);
         assert(fd_ != -1);
     }
 
     // This function is called after every test.
     void TearDown() override {
-        disk_manager_->close_file(fd_);
+        disk_manager_->close_file(TEST_FILE_NAME_CCUR);
         // disk_manager_->destroy_file(TEST_FILE_NAME_CCUR);  // you can choose to delete the file
 
         // 返回上一层目录
@@ -471,7 +474,8 @@ TEST(StorageTest, SimpleTest) {
         }
 
         // open file
-        int fd = disk_manager->open_file(filename);
+        disk_manager->open_file(filename);
+        int fd = disk_manager->get_file_fd(filename);
         char *tmp = new char[PAGE_SIZE * MAX_PAGES];  // TODO: fix error in detected memory leaks
 
         mock[fd] = tmp;
@@ -547,12 +551,13 @@ TEST(StorageTest, SimpleTest) {
         }
         // re-open file
         if (rand() % 100 == 0) {
-            disk_manager->close_file(fd);
             auto filename = fd2name[fd];
+            disk_manager->close_file(filename);
             char *buf = mock[fd];
             fd2name.erase(fd);
             mock.erase(fd);
-            int new_fd = disk_manager->open_file(filename);
+            disk_manager->open_file(filename);
+            int new_fd = disk_manager->get_file_fd(filename);
             mock[new_fd] = buf;
             fd2name[new_fd] = filename;
         }
@@ -572,9 +577,8 @@ TEST(StorageTest, SimpleTest) {
 
     // close and destroy files
     for (auto &entry : fd2name) {
-        int fd = entry.first;
         auto &filename = entry.second;
-        disk_manager->close_file(fd);
+        disk_manager->close_file(filename);
         disk_manager->destroy_file(filename);
         try {
             disk_manager->destroy_file(filename);
@@ -731,7 +735,7 @@ class TxnModuleTest : public ::testing::Test {
 
     void TearDown() override {
         if (disk_manager_->GetLogFd() != -1) {
-            disk_manager_->close_file(disk_manager_->GetLogFd());
+            disk_manager_->close_file(LOG_FILE_NAME);
             disk_manager_->SetLogFd(-1);
         }
         if (file_handle_ != nullptr) {
