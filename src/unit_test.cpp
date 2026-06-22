@@ -25,6 +25,7 @@ See the Mulan PSL v2 for more details. */
 #include <ctime>
 #include <iostream>
 #include <memory>
+#include <numeric>
 #include <random>
 #include <set>
 #include <string>
@@ -33,8 +34,13 @@ See the Mulan PSL v2 for more details. */
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "index/ix_manager.h"
+#include "recovery/log_manager.h"
 #include "replacer/lru_replacer.h"
 #include "storage/disk_manager.h"
+#include "system/sm_manager.h"
+#include "transaction/concurrency/lock_manager.h"
+#include "transaction/transaction_manager.h"
 
 const std::string TEST_DB_NAME = "BufferPoolManagerTest_db";  // 以数据库名作为根目录
 const std::string TEST_FILE_NAME = "basic";                   // 测试文件的名字
@@ -660,4 +666,341 @@ TEST(RecordManagerTest, SimpleTest) {
     // clean up
     rm_manager->close_file(file_handle.get());
     rm_manager->destroy_file(filename);
+}
+
+const std::string TEST_TXN_DB_NAME = "TxnModuleTest_db";
+const std::string TEST_TXN_FILE_NAME = "txn.tbl";
+
+class TxnModuleTest : public ::testing::Test {
+   public:
+    std::unique_ptr<DiskManager> disk_manager_;
+    std::unique_ptr<BufferPoolManager> buffer_pool_manager_;
+    std::unique_ptr<RmManager> rm_manager_;
+    std::unique_ptr<IxManager> ix_manager_;
+    std::unique_ptr<SmManager> sm_manager_;
+    std::unique_ptr<LogManager> log_manager_;
+    std::unique_ptr<LockManager> lock_manager_;
+    std::unique_ptr<TransactionManager> txn_manager_;
+    RmFileHandle *file_handle_ = nullptr;
+
+    void SetUp() override {
+        ::testing::Test::SetUp();
+        disk_manager_ = std::make_unique<DiskManager>();
+        buffer_pool_manager_ = std::make_unique<BufferPoolManager>(BUFFER_POOL_SIZE, disk_manager_.get());
+        rm_manager_ = std::make_unique<RmManager>(disk_manager_.get(), buffer_pool_manager_.get());
+        ix_manager_ = std::make_unique<IxManager>(disk_manager_.get(), buffer_pool_manager_.get());
+        sm_manager_ = std::make_unique<SmManager>(
+            disk_manager_.get(), buffer_pool_manager_.get(), rm_manager_.get(), ix_manager_.get());
+        log_manager_ = std::make_unique<LogManager>(disk_manager_.get());
+        lock_manager_ = std::make_unique<LockManager>();
+        txn_manager_ = std::make_unique<TransactionManager>(lock_manager_.get(), sm_manager_.get());
+
+        if (!disk_manager_->is_dir(TEST_TXN_DB_NAME)) {
+            disk_manager_->create_dir(TEST_TXN_DB_NAME);
+        }
+        ASSERT_EQ(0, chdir(TEST_TXN_DB_NAME.c_str()));
+
+        if (disk_manager_->is_file(TEST_TXN_FILE_NAME)) {
+            disk_manager_->destroy_file(TEST_TXN_FILE_NAME);
+        }
+        if (disk_manager_->is_file(LOG_FILE_NAME)) {
+            disk_manager_->destroy_file(LOG_FILE_NAME);
+        }
+
+        rm_manager_->create_file(TEST_TXN_FILE_NAME, sizeof(int));
+        sm_manager_->fhs_[TEST_TXN_FILE_NAME] = rm_manager_->open_file(TEST_TXN_FILE_NAME);
+        file_handle_ = sm_manager_->fhs_[TEST_TXN_FILE_NAME].get();
+        disk_manager_->create_file(LOG_FILE_NAME);
+    }
+
+    void TearDown() override {
+        if (disk_manager_->GetLogFd() != -1) {
+            disk_manager_->close_file(disk_manager_->GetLogFd());
+            disk_manager_->SetLogFd(-1);
+        }
+        if (file_handle_ != nullptr) {
+            rm_manager_->close_file(file_handle_);
+        }
+        sm_manager_->fhs_.clear();
+        if (disk_manager_->is_file(TEST_TXN_FILE_NAME)) {
+            disk_manager_->destroy_file(TEST_TXN_FILE_NAME);
+        }
+        if (disk_manager_->is_file(LOG_FILE_NAME)) {
+            disk_manager_->destroy_file(LOG_FILE_NAME);
+        }
+        ASSERT_EQ(0, chdir(".."));
+    }
+};
+
+TEST_F(TxnModuleTest, LogManagerFlushRoundTrip) {
+    BeginLogRecord begin_log(7);
+    EXPECT_EQ(0, log_manager_->add_log_to_buffer(&begin_log));
+
+    int old_value_int = 11;
+    int new_value_int = 19;
+    RmRecord old_value(sizeof(int), reinterpret_cast<char *>(&old_value_int));
+    RmRecord new_value(sizeof(int), reinterpret_cast<char *>(&new_value_int));
+    Rid rid{3, 4};
+
+    InsertLogRecord insert_log(7, old_value, rid, TEST_TXN_FILE_NAME);
+    DeleteLogRecord delete_log(7, old_value, rid, TEST_TXN_FILE_NAME);
+    UpdateLogRecord update_log(7, old_value, new_value, rid, TEST_TXN_FILE_NAME);
+    CommitLogRecord commit_log(7);
+
+    EXPECT_EQ(1, log_manager_->add_log_to_buffer(&insert_log));
+    EXPECT_EQ(2, log_manager_->add_log_to_buffer(&delete_log));
+    EXPECT_EQ(3, log_manager_->add_log_to_buffer(&update_log));
+    EXPECT_EQ(4, log_manager_->add_log_to_buffer(&commit_log));
+    log_manager_->flush_log_to_disk();
+
+    int file_size = disk_manager_->get_file_size(LOG_FILE_NAME);
+    ASSERT_GT(file_size, 0);
+
+    std::vector<char> raw(file_size);
+    ASSERT_EQ(file_size, disk_manager_->read_log(raw.data(), file_size, 0));
+
+    BeginLogRecord begin_log_copy;
+    begin_log_copy.deserialize(raw.data());
+    EXPECT_EQ(LogType::begin, begin_log_copy.log_type_);
+    EXPECT_EQ(7, begin_log_copy.log_tid_);
+
+    InsertLogRecord insert_log_copy;
+    insert_log_copy.deserialize(raw.data() + begin_log_copy.log_tot_len_);
+    EXPECT_EQ(rid.page_no, insert_log_copy.rid_.page_no);
+    EXPECT_EQ(rid.slot_no, insert_log_copy.rid_.slot_no);
+    EXPECT_EQ(0, std::memcmp(old_value.data, insert_log_copy.insert_value_.data, sizeof(int)));
+    EXPECT_EQ(TEST_TXN_FILE_NAME,
+              std::string(insert_log_copy.table_name_, insert_log_copy.table_name_size_));
+
+    DeleteLogRecord delete_log_copy;
+    delete_log_copy.deserialize(raw.data() + begin_log_copy.log_tot_len_ + insert_log_copy.log_tot_len_);
+    EXPECT_EQ(rid.page_no, delete_log_copy.rid_.page_no);
+    EXPECT_EQ(0, std::memcmp(old_value.data, delete_log_copy.delete_value_.data, sizeof(int)));
+
+    UpdateLogRecord update_log_copy;
+    update_log_copy.deserialize(raw.data() + begin_log_copy.log_tot_len_ + insert_log_copy.log_tot_len_ +
+                                delete_log_copy.log_tot_len_);
+    EXPECT_EQ(rid.slot_no, update_log_copy.rid_.slot_no);
+    EXPECT_EQ(0, std::memcmp(old_value.data, update_log_copy.old_value_.data, sizeof(int)));
+    EXPECT_EQ(0, std::memcmp(new_value.data, update_log_copy.new_value_.data, sizeof(int)));
+
+    CommitLogRecord commit_log_copy;
+    commit_log_copy.deserialize(raw.data() + begin_log_copy.log_tot_len_ + insert_log_copy.log_tot_len_ +
+                                delete_log_copy.log_tot_len_ + update_log_copy.log_tot_len_);
+    EXPECT_EQ(LogType::commit, commit_log_copy.log_type_);
+    EXPECT_EQ(7, commit_log_copy.log_tid_);
+}
+
+TEST_F(TxnModuleTest, LockManagerCompatibilityAndShrinkPhase) {
+    Transaction txn1(1);
+    Transaction txn2(2);
+    Transaction txn3(3);
+    Rid rid{1, 0};
+
+    EXPECT_TRUE(lock_manager_->lock_shared_on_table(&txn1, 100));
+    EXPECT_TRUE(lock_manager_->lock_shared_on_table(&txn2, 100));
+
+    try {
+        lock_manager_->lock_exclusive_on_table(&txn1, 100);
+        FAIL();
+    } catch (const TransactionAbortException &e) {
+        EXPECT_EQ(AbortReason::UPGRADE_CONFLICT, e.GetAbortReason());
+    }
+
+    EXPECT_TRUE(lock_manager_->unlock(&txn1, LockDataId(100, LockDataType::TABLE)));
+    EXPECT_EQ(TransactionState::SHRINKING, txn1.get_state());
+
+    try {
+        lock_manager_->lock_shared_on_record(&txn1, rid, 100);
+        FAIL();
+    } catch (const TransactionAbortException &e) {
+        EXPECT_EQ(AbortReason::LOCK_ON_SHIRINKING, e.GetAbortReason());
+    }
+
+    EXPECT_TRUE(lock_manager_->lock_shared_on_record(&txn3, rid, 100));
+    EXPECT_EQ(2U, txn3.get_lock_set()->size());
+    EXPECT_EQ(1U, txn3.get_lock_set()->count(LockDataId(100, LockDataType::TABLE)));
+    EXPECT_EQ(1U, txn3.get_lock_set()->count(LockDataId(100, rid, LockDataType::RECORD)));
+}
+
+TEST_F(TxnModuleTest, TransactionCommitPersistsInsert) {
+    Transaction *txn = txn_manager_->begin(nullptr, log_manager_.get());
+    Context context(lock_manager_.get(), log_manager_.get(), txn);
+    int value = 42;
+
+    Rid rid = file_handle_->insert_record(reinterpret_cast<char *>(&value), &context);
+    txn_manager_->commit(txn, log_manager_.get());
+
+    EXPECT_EQ(TransactionState::COMMITTED, txn->get_state());
+    EXPECT_TRUE(file_handle_->is_record(rid));
+    auto record = file_handle_->get_record(rid, nullptr);
+    EXPECT_EQ(value, *reinterpret_cast<int *>(record->data));
+    EXPECT_TRUE(txn->get_write_set()->empty());
+    EXPECT_EQ(0U, TransactionManager::txn_map.count(txn->get_transaction_id()));
+    delete txn;
+}
+
+TEST_F(TxnModuleTest, TransactionAbortUndoesUpdateAndDelete) {
+    int original_value = 7;
+    int deleted_value = 9;
+    Rid update_rid = file_handle_->insert_record(reinterpret_cast<char *>(&original_value), nullptr);
+    Rid delete_rid = file_handle_->insert_record(reinterpret_cast<char *>(&deleted_value), nullptr);
+
+    Transaction *txn = txn_manager_->begin(nullptr, log_manager_.get());
+    Context context(lock_manager_.get(), log_manager_.get(), txn);
+    int updated_value = 21;
+
+    file_handle_->update_record(update_rid, reinterpret_cast<char *>(&updated_value), &context);
+    file_handle_->delete_record(delete_rid, &context);
+    txn_manager_->abort(txn, log_manager_.get());
+
+    auto update_record = file_handle_->get_record(update_rid, nullptr);
+    EXPECT_EQ(original_value, *reinterpret_cast<int *>(update_record->data));
+    EXPECT_TRUE(file_handle_->is_record(delete_rid));
+    auto restored_record = file_handle_->get_record(delete_rid, nullptr);
+    EXPECT_EQ(deleted_value, *reinterpret_cast<int *>(restored_record->data));
+    EXPECT_TRUE(txn->get_write_set()->empty());
+    EXPECT_EQ(TransactionState::ABORTED, txn->get_state());
+    delete txn;
+}
+
+TEST(IndexNodeTest, LeafAndInternalOperations) {
+    IxFileHdr file_hdr(IX_NO_PAGE, 0, IX_INIT_ROOT_PAGE, 1, sizeof(int), 4, (4 + 1) * sizeof(int), 0, 0);
+    file_hdr.col_types_.push_back(TYPE_INT);
+    file_hdr.col_lens_.push_back(sizeof(int));
+
+    Page leaf_page;
+    auto *leaf_hdr = reinterpret_cast<IxPageHdr *>(leaf_page.get_data());
+    leaf_hdr->parent = IX_NO_PAGE;
+    leaf_hdr->num_key = 0;
+    leaf_hdr->is_leaf = true;
+    leaf_hdr->prev_leaf = IX_NO_PAGE;
+    leaf_hdr->next_leaf = IX_NO_PAGE;
+    IxNodeHandle leaf(&file_hdr, &leaf_page);
+
+    int key10 = 10;
+    int key20 = 20;
+    int key30 = 30;
+    leaf.insert(reinterpret_cast<char *>(&key20), Rid{2, 0});
+    leaf.insert(reinterpret_cast<char *>(&key10), Rid{1, 0});
+    leaf.insert(reinterpret_cast<char *>(&key30), Rid{3, 0});
+
+    EXPECT_EQ(0, leaf.lower_bound(reinterpret_cast<char *>(&key10)));
+    EXPECT_EQ(1, leaf.lower_bound(reinterpret_cast<char *>(&key20)));
+    EXPECT_EQ(2, leaf.upper_bound(reinterpret_cast<char *>(&key20)));
+
+    Rid *rid = nullptr;
+    ASSERT_TRUE(leaf.leaf_lookup(reinterpret_cast<char *>(&key20), &rid));
+    EXPECT_EQ(2, rid->page_no);
+
+    leaf.remove(reinterpret_cast<char *>(&key20));
+    EXPECT_EQ(2, leaf.get_size());
+    EXPECT_EQ(1, leaf.upper_bound(reinterpret_cast<char *>(&key10)));
+
+    Page internal_page;
+    auto *internal_hdr = reinterpret_cast<IxPageHdr *>(internal_page.get_data());
+    internal_hdr->parent = IX_NO_PAGE;
+    internal_hdr->num_key = 0;
+    internal_hdr->is_leaf = false;
+    internal_hdr->prev_leaf = IX_NO_PAGE;
+    internal_hdr->next_leaf = IX_NO_PAGE;
+    IxNodeHandle internal(&file_hdr, &internal_page);
+    internal.insert_pair(0, reinterpret_cast<char *>(&key10), Rid{100, 0});
+    internal.insert_pair(1, reinterpret_cast<char *>(&key20), Rid{200, 0});
+    internal.insert_pair(2, reinterpret_cast<char *>(&key30), Rid{300, 0});
+
+    int probe15 = 15;
+    int probe25 = 25;
+    EXPECT_EQ(100, internal.internal_lookup(reinterpret_cast<char *>(&probe15)));
+    EXPECT_EQ(200, internal.internal_lookup(reinterpret_cast<char *>(&probe25)));
+}
+
+const std::string TEST_INDEX_DB_NAME = "IndexModuleTest_db";
+const std::string TEST_INDEX_BASE_NAME = "orders";
+
+class IndexModuleTest : public ::testing::Test {
+   public:
+    std::unique_ptr<DiskManager> disk_manager_;
+    std::unique_ptr<BufferPoolManager> buffer_pool_manager_;
+    std::unique_ptr<IxManager> ix_manager_;
+    std::unique_ptr<IxIndexHandle> ih_;
+    std::vector<ColMeta> index_cols_;
+
+    void SetUp() override {
+        ::testing::Test::SetUp();
+        disk_manager_ = std::make_unique<DiskManager>();
+        buffer_pool_manager_ = std::make_unique<BufferPoolManager>(BUFFER_POOL_SIZE, disk_manager_.get());
+        ix_manager_ = std::make_unique<IxManager>(disk_manager_.get(), buffer_pool_manager_.get());
+        index_cols_.push_back({"orders", "id", TYPE_INT, sizeof(int), 0, true});
+
+        if (!disk_manager_->is_dir(TEST_INDEX_DB_NAME)) {
+            disk_manager_->create_dir(TEST_INDEX_DB_NAME);
+        }
+        ASSERT_EQ(0, chdir(TEST_INDEX_DB_NAME.c_str()));
+
+        if (ix_manager_->exists(TEST_INDEX_BASE_NAME, index_cols_)) {
+            ix_manager_->destroy_index(TEST_INDEX_BASE_NAME, index_cols_);
+        }
+        ix_manager_->create_index(TEST_INDEX_BASE_NAME, index_cols_);
+        ih_ = ix_manager_->open_index(TEST_INDEX_BASE_NAME, index_cols_);
+    }
+
+    void TearDown() override {
+        if (ih_ != nullptr) {
+            ix_manager_->close_index(ih_.get());
+            ih_.reset();
+        }
+        if (ix_manager_->exists(TEST_INDEX_BASE_NAME, index_cols_)) {
+            ix_manager_->destroy_index(TEST_INDEX_BASE_NAME, index_cols_);
+        }
+        ASSERT_EQ(0, chdir(".."));
+    }
+};
+
+TEST_F(IndexModuleTest, InsertLookupScanAndDelete) {
+    std::vector<int> keys(200);
+    std::iota(keys.begin(), keys.end(), 0);
+    std::mt19937 rng(123);
+    std::shuffle(keys.begin(), keys.end(), rng);
+
+    for (int key : keys) {
+        Rid rid{key, key + 1};
+        ih_->insert_entry(reinterpret_cast<char *>(&key), rid, nullptr);
+    }
+
+    for (int key = 0; key < 200; ++key) {
+        std::vector<Rid> result;
+        ASSERT_TRUE(ih_->get_value(reinterpret_cast<char *>(&key), &result, nullptr));
+        ASSERT_EQ(1U, result.size());
+        EXPECT_EQ(key, result[0].page_no);
+        EXPECT_EQ(key + 1, result[0].slot_no);
+    }
+
+    int lower_key = 40;
+    int upper_key = 60;
+    IxScan scan(ih_.get(), ih_->lower_bound(reinterpret_cast<char *>(&lower_key)),
+                ih_->upper_bound(reinterpret_cast<char *>(&upper_key)), buffer_pool_manager_.get());
+    int expected = lower_key;
+    for (; !scan.is_end(); scan.next()) {
+        Rid rid = scan.rid();
+        EXPECT_EQ(expected, rid.page_no);
+        EXPECT_EQ(expected + 1, rid.slot_no);
+        expected++;
+    }
+    EXPECT_EQ(upper_key + 1, expected);
+
+    for (int key = 0; key < 200; key += 2) {
+        EXPECT_TRUE(ih_->delete_entry(reinterpret_cast<char *>(&key), nullptr));
+    }
+
+    for (int key = 0; key < 200; ++key) {
+        std::vector<Rid> result;
+        bool found = ih_->get_value(reinterpret_cast<char *>(&key), &result, nullptr);
+        if (key % 2 == 0) {
+            EXPECT_FALSE(found);
+        } else {
+            ASSERT_TRUE(found);
+            EXPECT_EQ(key, result[0].page_no);
+        }
+    }
 }
