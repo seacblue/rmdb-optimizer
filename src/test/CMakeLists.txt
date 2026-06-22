@@ -33,6 +33,19 @@ target_include_directories(test_dm PRIVATE ${TEST_INCLUDES})
 add_test(NAME test_dm COMMAND test_dm
     WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
 
+# -------------------- SmManager 测试 --------------------
+# 对应源代码: src/system/sm_manager.cpp
+# 依赖: system → index → storage, record → system(storage,transaction)
+# 编译 & 运行: make test_sm -j$(nproc) && ./bin/test_sm
+add_executable(test_sm test_system.cpp)
+target_link_libraries(test_sm system index record storage lru_replacer ${TEST_LIBS})
+target_include_directories(test_sm PRIVATE ${TEST_INCLUDES})
+# 静态库循环依赖（record↔system）通过 --start-group 解决
+target_link_options(test_sm PRIVATE -Wl,--start-group)
+target_link_options(test_sm PRIVATE -Wl,--end-group)
+add_test(NAME test_sm COMMAND test_sm
+    WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+
 # ============================================================
 # 新模块测试添加模板
 #
@@ -62,5 +75,4 @@ add_test(NAME test_dm COMMAND test_dm
 add_custom_target(run_all_tests
     COMMAND ctest --output-on-failure
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-    COMMENT "Running all module tests via CTest..."
-)
+    COMMENT "Running all module tests via CTest...")
