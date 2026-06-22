@@ -38,7 +38,6 @@ See the Mulan PSL v2 for more details.
 #include "record/rm.h"
 #include "storage/buffer_pool_manager.h"
 #include "storage/disk_manager.h"
-#include "common/config.h"
 #include "system/sm_manager.h"
 #include "test_utils.h"
 #include "test_sm_context.h"
