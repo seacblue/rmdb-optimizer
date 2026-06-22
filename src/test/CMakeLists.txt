@@ -46,14 +46,18 @@ target_link_options(test_sm PRIVATE -Wl,--end-group)
 add_test(NAME test_sm COMMAND test_sm
     WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
 
+# -------------------- BufferPoolManager 测试 --------------------
+# 对应源代码: src/storage/buffer_pool_manager.cpp
+# 依赖: storage(含 disk_manager + lru_replacer)
+# 编译 & 运行: make test_bpm -j$(nproc) && ./bin/test_bpm
+add_executable(test_bpm test_buffer_pool.cpp)
+target_link_libraries(test_bpm storage lru_replacer ${TEST_LIBS})
+target_include_directories(test_bpm PRIVATE ${TEST_INCLUDES})
+add_test(NAME test_bpm COMMAND test_bpm
+    WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+
 # ============================================================
 # 新模块测试添加模板
-#
-# add_executable(test_bpm test_buffer_pool.cpp)
-# target_link_libraries(test_bpm storage lru_replacer ${TEST_LIBS})
-# target_include_directories(test_bpm PRIVATE ${TEST_INCLUDES})
-# add_test(NAME test_bpm COMMAND test_bpm
-#     WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
 #
 # add_executable(test_ix test_ix_index_handle.cpp)
 # target_link_libraries(test_ix index storage lru_replacer ${TEST_LIBS})

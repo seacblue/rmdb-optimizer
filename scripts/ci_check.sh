@@ -25,6 +25,7 @@ set -euo pipefail
 MODULES=(
     "lru_replacer:test_lru:src/replacer:80"
     "disk_manager:test_dm:src/storage:60"
+    "buffer_pool_manager:test_bpm:src/storage:80"
     "system:test_sm:src/system:80"
     # 后续模块（取消注释即可启用）：
     # "record:test_record:src/record:80"
