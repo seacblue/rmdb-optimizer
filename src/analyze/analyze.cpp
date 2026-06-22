@@ -144,8 +144,17 @@ void Analyze::check_clause(const std::vector<std::string> &tab_names, std::vecto
             // Allow INT ↔ BIGINT comparison (implicit type conversion)
             bool both_int_types = (lhs_type == TYPE_INT || lhs_type == TYPE_BIGINT) &&
                                   (rhs_type == TYPE_INT || rhs_type == TYPE_BIGINT);
-            if (!both_int_types) {
+            // Allow STRING → DATETIME comparison (datetime value from string literal)
+            bool string_to_datetime = (lhs_type == TYPE_DATETIME && rhs_type == TYPE_STRING);
+            if (!both_int_types && !string_to_datetime) {
                 throw IncompatibleTypeError(coltype2str(lhs_type), coltype2str(rhs_type));
+            }
+            // Convert string value to DATETIME internal encoding
+            if (string_to_datetime) {
+                if (!validate_datetime_str(cond.rhs_val.str_val)) {
+                    throw InvalidDatetimeError(cond.rhs_val.str_val);
+                }
+                cond.rhs_val.set_datetime(datetime_str_to_int64(cond.rhs_val.str_val));
             }
         }
     }

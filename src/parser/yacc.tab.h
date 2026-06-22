@@ -75,8 +75,7 @@ extern int yydebug;
     INT = 276,                     /* INT  */
     CHAR = 277,                    /* CHAR  */
     FLOAT = 278,                   /* FLOAT  */
-    BIGINT = 279,                  /* BIGINT  */
-    INDEX = 280,                   /* INDEX  */
+    BIGINT = 279,                  /* BIGINT  */    DATETIME = 280,                /* DATETIME  */    INDEX = 280,                   /* INDEX  */
     AND = 281,                     /* AND  */
     JOIN = 282,                    /* JOIN  */
     EXIT = 283,                    /* EXIT  */

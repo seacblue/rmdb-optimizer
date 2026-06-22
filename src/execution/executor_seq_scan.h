@@ -126,6 +126,8 @@ class SeqScanExecutor : public AbstractExecutor {
                     }
                 } else if (cond.rhs_val.type == TYPE_FLOAT) {
                     *(float *)rhs_buf.get() = cond.rhs_val.float_val;
+                } else if (cond.rhs_val.type == TYPE_DATETIME) {
+                    *(int64_t *)rhs_buf.get() = cond.rhs_val.bigint_val;
                 } else {
                     memcpy(rhs_buf.get(), cond.rhs_val.str_val.c_str(),
                            std::min((int)cond.rhs_val.str_val.size(), len));
@@ -162,7 +164,7 @@ class SeqScanExecutor : public AbstractExecutor {
             int ia = *(const int *)a, ib = *(const int *)b;
             return (ia < ib) ? -1 : (ia > ib) ? 1 : 0;
         }
-        if (type == TYPE_BIGINT) {
+        if (type == TYPE_BIGINT || type == TYPE_DATETIME) {
             int64_t ia = *(const int64_t *)a, ib = *(const int64_t *)b;
             return (ia < ib) ? -1 : (ia > ib) ? 1 : 0;
         }

@@ -61,6 +61,12 @@ class InsertExecutor : public AbstractExecutor {
                         throw IncompatibleTypeError(coltype2str(col.type), coltype2str(val.type));
                     }
                     val.set_int(static_cast<int>(val.bigint_val));
+                } else if (col.type == TYPE_DATETIME && val.type == TYPE_STRING) {
+                    // Convert string to DATETIME internal encoding
+                    if (!validate_datetime_str(val.str_val)) {
+                        throw InvalidDatetimeError(val.str_val);
+                    }
+                    val.set_datetime(datetime_str_to_int64(val.str_val));
                 } else {
                     throw IncompatibleTypeError(coltype2str(col.type), coltype2str(val.type));
                 }
