@@ -36,12 +36,13 @@ white_space [ \t]+
 new_line "\r"|"\n"|"\r\n"
 sign "+"|"-"
 identifier {alpha}(_|{alpha}|{digit})*
-value_int {sign}?{digit}+
-value_float {sign}?{digit}+\.({digit}+)?
+value_int {digit}+
+value_float ({digit}+\.({digit}*)|{digit}*\.({digit}+))
 value_string '[^']*'
-single_op ";"|"("|")"|","|"*"|"="|">"|"<"|"."
+single_op ";"|"("|")"|","|"*"|"+"|"-"|"/"|"="|">"|"<"|"."
 
 %x STATE_COMMENT
+%x STATE_LOAD_PATH
 
 %%
     /* block comment */
@@ -54,6 +55,17 @@ single_op ";"|"("|")"|","|"*"|"="|">"|"<"|"."
     /* white space and new line */
 {white_space} { /* ignore white space */ }
 {new_line} { /* ignore new line */ }
+<STATE_LOAD_PATH>{white_space} { /* ignore white space */ }
+<STATE_LOAD_PATH>{value_string} {
+    yylval->sv_str = std::string(yytext + 1, strlen(yytext) - 2);
+    BEGIN(INITIAL);
+    return VALUE_STRING;
+}
+<STATE_LOAD_PATH>[^ \t\r\n;(),]+ {
+    yylval->sv_str = yytext;
+    BEGIN(INITIAL);
+    return FILE_PATH;
+}
     /* keywords */
 "SHOW" { return SHOW; }
 "BEGIN" { return TXN_BEGIN; }
@@ -66,6 +78,7 @@ single_op ";"|"("|")"|","|"*"|"="|">"|"<"|"."
 "DROP" { return DROP; }
 "DESC" { return DESC; }
 "INSERT" { return INSERT; }
+"LOAD" { BEGIN(STATE_LOAD_PATH); return LOAD; }
 "INTO" { return INTO; }
 "VALUES" { return VALUES; }
 "DELETE" { return DELETE; }

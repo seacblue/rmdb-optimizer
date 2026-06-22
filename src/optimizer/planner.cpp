@@ -323,6 +323,10 @@ std::shared_ptr<Plan> Planner::do_planner(std::shared_ptr<Query> query, Context 
         // insert;
         plannerRoot = std::make_shared<DMLPlan>(T_Insert, std::shared_ptr<Plan>(),  x->tab_name,  
                                                     query->values, std::vector<Condition>(), std::vector<SetClause>());
+    } else if (auto x = std::dynamic_pointer_cast<ast::LoadStmt>(query->parse)) {
+        plannerRoot = std::make_shared<DMLPlan>(T_Load, std::shared_ptr<Plan>(), x->tab_name,
+                                                std::vector<Value>(), std::vector<Condition>(),
+                                                std::vector<SetClause>(), query->load_file);
     } else if (auto x = std::dynamic_pointer_cast<ast::DeleteStmt>(query->parse)) {
         // delete;
         // 生成表扫描方式

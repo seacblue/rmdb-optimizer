@@ -15,6 +15,8 @@ See the Mulan PSL v2 for more details. */
 #include <signal.h>
 #include <unistd.h>
 #include <atomic>
+#include <algorithm>
+#include <cctype>
 
 #include "errors.h"
 #include "optimizer/optimizer.h"
@@ -28,6 +30,20 @@ See the Mulan PSL v2 for more details. */
 #define MAX_CONN_LIMIT 8
 
 static bool should_exit = false;
+
+namespace {
+
+std::string trim_copy(const char *input) {
+    std::string str = input == nullptr ? "" : std::string(input);
+    auto begin = std::find_if_not(str.begin(), str.end(), [](unsigned char ch) { return std::isspace(ch); });
+    auto end = std::find_if_not(str.rbegin(), str.rend(), [](unsigned char ch) { return std::isspace(ch); }).base();
+    if (begin >= end) {
+        return "";
+    }
+    return std::string(begin, end);
+}
+
+}  // namespace
 
 // 构建全局所需的管理器对象
 auto disk_manager = std::make_unique<DiskManager>();
@@ -111,6 +127,24 @@ void *client_handler(void *sock_fd) {
 
         std::cout << "Read from client " << fd << ": " << data_recv << std::endl;
 
+        std::string trimmed_cmd = trim_copy(data_recv);
+        if (trimmed_cmd == "set output_file off") {
+            g_output_file_on.store(false);
+            char empty = '\0';
+            if (write(fd, &empty, 1) == -1) {
+                break;
+            }
+            continue;
+        }
+        if (trimmed_cmd == "set output_file on") {
+            g_output_file_on.store(true);
+            char empty = '\0';
+            if (write(fd, &empty, 1) == -1) {
+                break;
+            }
+            continue;
+        }
+
         memset(data_send, '\0', BUFFER_LENGTH);
         offset = 0;
 
@@ -147,10 +181,12 @@ void *client_handler(void *sock_fd) {
                     txn_manager->abort(context->txn_, log_manager.get());
                     std::cout << e.GetInfo() << std::endl;
 
-                    std::fstream outfile;
-                    outfile.open("output.txt", std::ios::out | std::ios::app);
-                    outfile << str;
-                    outfile.close();
+                    if (g_output_file_on.load()) {
+                        std::fstream outfile;
+                        outfile.open("output.txt", std::ios::out | std::ios::app);
+                        outfile << str;
+                        outfile.close();
+                    }
                 } catch (RMDBError &e) {
                     // 遇到异常，需要打印failure到output.txt文件中，并发异常信息返回给客户端
                     std::cerr << e.what() << std::endl;
@@ -161,10 +197,12 @@ void *client_handler(void *sock_fd) {
                     offset = e.get_msg_len() + 1;
 
                     // 将报错信息写入output.txt
-                    std::fstream outfile;
-                    outfile.open("output.txt",std::ios::out | std::ios::app);
-                    outfile << "failure\n";
-                    outfile.close();
+                    if (g_output_file_on.load()) {
+                        std::fstream outfile;
+                        outfile.open("output.txt",std::ios::out | std::ios::app);
+                        outfile << "failure\n";
+                        outfile.close();
+                    }
                 }
             }
         }
