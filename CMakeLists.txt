@@ -25,3 +25,15 @@ endif()
 enable_testing()
 add_subdirectory(src)
 add_subdirectory(deps)
+
+# ============================================================
+# 打包可独立编译的生产子集（不含测试/文档/CI）
+#   make package_src                 → 生成 rmdb-src.zip
+#   make package_src ZIP=submit.zip  → 指定输出路径
+#   ZIP=submit.zip make package_src  → 环境变量方式（等效）
+# ============================================================
+add_custom_target(package_src
+    COMMAND "${CMAKE_SOURCE_DIR}/scripts/package_src.sh" $(ZIP)
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    COMMENT "Packaging production subset (excl. tests/docs/CI) ..."
+)
