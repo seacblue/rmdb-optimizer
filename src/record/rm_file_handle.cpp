@@ -184,7 +184,14 @@ Rid RmFileHandle::insert_record(char *buf, Context *context) {
         ph.page_hdr->next_free_page_no = RM_NO_PAGE;
     }
 
-    // 7. unpin（标记脏页）
+    // 7. 如果提供了 context，创建 WriteRecord 用于事务回滚
+    if (context != nullptr && context->txn_ != nullptr) {
+        Rid rid{page_no, slot_no};
+        context->txn_->append_write_record(
+            new WriteRecord(WType::INSERT_TUPLE, disk_manager_->get_file_name(fd_), rid));
+    }
+
+    // 8. unpin（标记脏页）
     buffer_pool_manager_->unpin_page({fd_, page_no}, true);
 
     return {page_no, slot_no};
@@ -247,10 +254,18 @@ void RmFileHandle::delete_record(const Rid &rid, Context *context) {
         return;
     }
 
-    // 3. 判断删除前页面是否已满（用于决定是否需要 release）
+    // 3. 如果提供了 context，在删除前先读取旧记录，创建 WriteRecord 用于事务回滚
+    if (context != nullptr && context->txn_ != nullptr) {
+        char *slot = ph.get_slot(rid.slot_no);
+        RmRecord old_record(file_hdr_.record_size, slot);
+        context->txn_->append_write_record(
+            new WriteRecord(WType::DELETE_TUPLE, disk_manager_->get_file_name(fd_), rid, old_record));
+    }
+
+    // 4. 判断删除前页面是否已满（用于决定是否需要 release）
     bool was_full = (ph.page_hdr->num_records >= file_hdr_.num_records_per_page);
 
-    // 4. 清除 bitmap
+    // 5. 清除 bitmap
     Bitmap::reset(ph.bitmap, rid.slot_no);
 
     // 5. 更新页面元数据
@@ -288,10 +303,18 @@ void RmFileHandle::update_record(const Rid &rid, char *buf, Context *context) {
         return;
     }
 
-    // 3. 拷贝新数据到 slot
+    // 3. 如果提供了 context，在更新前先读取旧记录，创建 WriteRecord 用于事务回滚
+    if (context != nullptr && context->txn_ != nullptr) {
+        char *slot = ph.get_slot(rid.slot_no);
+        RmRecord old_record(file_hdr_.record_size, slot);
+        context->txn_->append_write_record(
+            new WriteRecord(WType::UPDATE_TUPLE, disk_manager_->get_file_name(fd_), rid, old_record));
+    }
+
+    // 4. 拷贝新数据到 slot
     char *slot = ph.get_slot(rid.slot_no);
     memcpy(slot, buf, file_hdr_.record_size);
 
-    // 4. unpin（标记脏）
+    // 5. unpin（标记脏）
     buffer_pool_manager_->unpin_page({fd_, rid.page_no}, true);
 }
