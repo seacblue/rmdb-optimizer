@@ -89,7 +89,7 @@ Page* BufferPoolManager::fetch_page(PageId page_id) {
         frame_id_t frame_id = it->second;
         Page *page = &pages_[frame_id];
         page->pin_count_++;                 // 增加固定计数
-        replacer_->pin(frame_id);          // 从 replacer 移除（不可淘汰）
+        replacer_->pin(frame_id);           // 从 replacer 移除（不可淘汰）
         return page;
     }
 
@@ -300,7 +300,7 @@ bool BufferPoolManager::delete_page(PageId page_id) {
 }
 
 /**
- * @description: 将 buffer pool 中属于指定文件 fd 的**所有脏页**写回磁盘。
+ * @description: 将 buffer pool 中属于指定文件 fd 的所有脏页写回磁盘。
  *
  * 注意：此方法遍历整个 pages_ 数组，不会修改 pin_count_，
  *       仅将 dirty 页面刷新到磁盘并清除脏标记。

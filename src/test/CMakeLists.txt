@@ -56,6 +56,19 @@ target_include_directories(test_bpm PRIVATE ${TEST_INCLUDES})
 add_test(NAME test_bpm COMMAND test_bpm
     WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
 
+# -------------------- Record 测试 (RmFileHandle + RmScan) --------------------
+# 对应源代码: src/record/rm_file_handle.cpp + rm_scan.cpp
+# 依赖: record → system, transaction, storage; 需 start-group 解循环
+# 编译 & 运行: make test_record -j$(nproc) && ./bin/test_record
+add_executable(test_record test_record.cpp)
+target_link_libraries(test_record record storage lru_replacer ${TEST_LIBS})
+target_include_directories(test_record PRIVATE ${TEST_INCLUDES})
+# 静态库循环依赖（record↔system）通过 --start-group 解决
+target_link_options(test_record PRIVATE -Wl,--start-group)
+target_link_options(test_record PRIVATE -Wl,--end-group)
+add_test(NAME test_record COMMAND test_record
+    WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+
 # ============================================================
 # 新模块测试添加模板
 #

@@ -300,27 +300,20 @@ void SmManager::create_index(const std::string& tab_name, const std::vector<std:
     // 构建索引键：遍历表中所有已有记录，将 (key, rid) 插入 B+ 树
     // 注意：IxIndexHandle::insert_entry 目前为 stub，
     //       待 B+ 树实现后方可真正插入已有数据
-    // 注意：RmScan / RmFileHandle::get_record 目前也为 stub，
-    //       因此添加空指针保护和迭代上限防止崩溃或死循环
     RmFileHandle *fh = fhs_.at(tab_name).get();
     RmScan scan(fh);
-    constexpr int kMaxScanGuard = 100000;  // 安全迭代上限，防止 stub 死循环
-    int scan_count = 0;
-    while (!scan.is_end() && scan_count < kMaxScanGuard) {
+    while (!scan.is_end()) {
         Rid rid = {.page_no = scan.rid().page_no, .slot_no = scan.rid().slot_no};
         auto rec = fh->get_record(rid, context);
-        if (rec != nullptr) {
-            // 拼接 key: 将索引列的值按顺序拷贝到 key 缓冲区
-            auto key_buf = std::make_unique<char[]>(index_col_tot_len);
-            int offset = 0;
-            for (auto &col : index_cols) {
-                memcpy(key_buf.get() + offset, rec->data + col.offset, col.len);
-                offset += col.len;
-            }
-            ih->insert_entry(key_buf.get(), rid, nullptr);
+        // 拼接 key: 将索引列的值按顺序拷贝到 key 缓冲区
+        auto key_buf = std::make_unique<char[]>(index_col_tot_len);
+        int offset = 0;
+        for (auto &col : index_cols) {
+            memcpy(key_buf.get() + offset, rec->data + col.offset, col.len);
+            offset += col.len;
         }
+        ih->insert_entry(key_buf.get(), rid, nullptr);
         scan.next();
-        ++scan_count;
     }
 
     // 更新字段元数据，标记为已索引

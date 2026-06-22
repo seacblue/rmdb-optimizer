@@ -27,8 +27,8 @@ MODULES=(
     "disk_manager:test_dm:src/storage:60"
     "buffer_pool_manager:test_bpm:src/storage:80"
     "system:test_sm:src/system:80"
+    "record:test_record:src/record:80"
     # 后续模块（取消注释即可启用）：
-    # "record:test_record:src/record:80"
     # "index:test_ix:src/index:80"
     # "transaction:test_txn:src/transaction:80"
     # "recovery:test_log:src/recovery:80"
