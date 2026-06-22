@@ -119,13 +119,15 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
             });
             if (lhs_it == cols.end()) return false;
 
-            ColType type = lhs_it->type;
+            ColType lhs_type = lhs_it->type;
             int len = lhs_it->len;
             const char *lhs_val = rec_data + lhs_it->offset;
 
             std::unique_ptr<char[]> rhs_buf;
             const char *rhs_val = nullptr;
+            ColType rhs_type = lhs_type;
             if (cond.is_rhs_val) {
+                rhs_type = cond.rhs_val.type;
                 rhs_buf = std::make_unique<char[]>(len);
                 memset(rhs_buf.get(), 0, len);
                 if (cond.rhs_val.type == TYPE_INT) {
@@ -142,10 +144,11 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
                     return c.tab_name == cond.rhs_col.tab_name && c.name == cond.rhs_col.col_name;
                 });
                 if (rhs_it == cols.end()) return false;
+                rhs_type = rhs_it->type;
                 rhs_val = rec_data + rhs_it->offset;
             }
 
-            int cmp = compare_value(lhs_val, rhs_val, type, len);
+            int cmp = compare_value(lhs_val, rhs_val, lhs_type, rhs_type, len, cond.is_rhs_val ? &cond.rhs_val : nullptr);
             bool ok = false;
             switch (cond.op) {
                 case OP_EQ: ok = (cmp == 0); break;
@@ -160,12 +163,28 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
         return true;
     }
 
-    static int compare_value(const char *a, const char *b, ColType type, int len) {
-        if (type == TYPE_INT) {
+    static int compare_value(const char *a, const char *b, ColType lhs_type, ColType rhs_type, int len, const Value *rhs_literal) {
+        if ((lhs_type == TYPE_INT || lhs_type == TYPE_FLOAT) &&
+            (rhs_type == TYPE_INT || rhs_type == TYPE_FLOAT) &&
+            lhs_type != rhs_type) {
+            double lhs_num = lhs_type == TYPE_FLOAT ? static_cast<double>(*reinterpret_cast<const float *>(a))
+                                                    : static_cast<double>(*reinterpret_cast<const int *>(a));
+            double rhs_num = 0.0;
+            if (rhs_literal != nullptr) {
+                rhs_num = rhs_type == TYPE_FLOAT ? static_cast<double>(rhs_literal->float_val)
+                                                 : static_cast<double>(rhs_literal->int_val);
+            } else {
+                rhs_num = rhs_type == TYPE_FLOAT ? static_cast<double>(*reinterpret_cast<const float *>(b))
+                                                 : static_cast<double>(*reinterpret_cast<const int *>(b));
+            }
+            if (fabs(lhs_num - rhs_num) < 1e-9) return 0;
+            return lhs_num < rhs_num ? -1 : 1;
+        }
+        if (lhs_type == TYPE_INT) {
             int ia = *(const int *)a, ib = *(const int *)b;
             return (ia < ib) ? -1 : (ia > ib) ? 1 : 0;
         }
-        if (type == TYPE_FLOAT) {
+        if (lhs_type == TYPE_FLOAT) {
             float fa = *(const float *)a, fb = *(const float *)b;
             if (fabs(fa - fb) < 1e-9) return 0;
             return (fa < fb) ? -1 : 1;

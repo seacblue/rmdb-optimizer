@@ -104,4 +104,5 @@ struct Condition {
 struct SetClause {
     TabCol lhs;
     Value rhs;
+    std::shared_ptr<ast::Expr> rhs_expr;
 };

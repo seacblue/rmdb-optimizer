@@ -24,7 +24,11 @@ std::shared_ptr<Query> Analyze::do_analyze(std::shared_ptr<ast::TreeNode> parse)
     {
         // 处理表名
         query->tables = std::move(x->tabs);
-        /** TODO: 检查表是否存在 */
+        for (const auto &tab_name : query->tables) {
+            if (!sm_manager_->db_.is_table(tab_name)) {
+                throw TableNotFoundError(tab_name);
+            }
+        }
 
         // 处理target list，再target list中添加上表名，例如 a.id
         for (auto &sv_sel_col : x->cols) {
@@ -50,17 +54,55 @@ std::shared_ptr<Query> Analyze::do_analyze(std::shared_ptr<ast::TreeNode> parse)
         get_clause(x->conds, query->conds);
         check_clause(query->tables, query->conds);
     } else if (auto x = std::dynamic_pointer_cast<ast::UpdateStmt>(parse)) {
-        /** TODO: */
+        if (!sm_manager_->db_.is_table(x->tab_name)) {
+            throw TableNotFoundError(x->tab_name);
+        }
+        query->tables = {x->tab_name};
+        std::vector<ColMeta> all_cols;
+        get_all_cols(query->tables, all_cols);
+        get_clause(x->conds, query->conds);
+        check_clause(query->tables, query->conds);
 
+        for (auto &sv_clause : x->set_clauses) {
+            SetClause clause;
+            clause.lhs = check_column(all_cols, {.tab_name = x->tab_name, .col_name = sv_clause->col_name});
+            clause.rhs_expr = sv_clause->rhs;
+            ColType rhs_type = resolve_expr_type(clause.rhs_expr, all_cols);
+
+            auto lhs_meta_it = sm_manager_->db_.get_table(clause.lhs.tab_name).get_col(clause.lhs.col_name);
+            bool numeric_compatible =
+                (lhs_meta_it->type == TYPE_INT || lhs_meta_it->type == TYPE_FLOAT) &&
+                (rhs_type == TYPE_INT || rhs_type == TYPE_FLOAT);
+            if (lhs_meta_it->type != rhs_type && !numeric_compatible) {
+                throw IncompatibleTypeError(coltype2str(lhs_meta_it->type), coltype2str(rhs_type));
+            }
+
+            if (auto rhs_val = std::dynamic_pointer_cast<ast::Value>(sv_clause->rhs)) {
+                clause.rhs = convert_sv_value(rhs_val);
+            }
+            query->set_clauses.push_back(std::move(clause));
+        }
     } else if (auto x = std::dynamic_pointer_cast<ast::DeleteStmt>(parse)) {
+        if (!sm_manager_->db_.is_table(x->tab_name)) {
+            throw TableNotFoundError(x->tab_name);
+        }
         //处理where条件
         get_clause(x->conds, query->conds);
         check_clause({x->tab_name}, query->conds);        
     } else if (auto x = std::dynamic_pointer_cast<ast::InsertStmt>(parse)) {
+        if (!sm_manager_->db_.is_table(x->tab_name)) {
+            throw TableNotFoundError(x->tab_name);
+        }
         // 处理insert 的values值
         for (auto &sv_val : x->vals) {
             query->values.push_back(convert_sv_value(sv_val));
         }
+    } else if (auto x = std::dynamic_pointer_cast<ast::LoadStmt>(parse)) {
+        if (!sm_manager_->db_.is_table(x->tab_name)) {
+            throw TableNotFoundError(x->tab_name);
+        }
+        query->tables = {x->tab_name};
+        query->load_file = x->file_path;
     } else {
         // do nothing
     }
@@ -86,8 +128,12 @@ TabCol Analyze::check_column(const std::vector<ColMeta> &all_cols, TabCol target
         }
         target.tab_name = tab_name;
     } else {
-        /** TODO: Make sure target column exists */
-        
+        auto pos = std::find_if(all_cols.begin(), all_cols.end(), [&](const ColMeta &col) {
+            return col.tab_name == target.tab_name && col.name == target.col_name;
+        });
+        if (pos == all_cols.end()) {
+            throw ColumnNotFoundError(target.tab_name + "." + target.col_name);
+        }
     }
     return target;
 }
@@ -133,7 +179,6 @@ void Analyze::check_clause(const std::vector<std::string> &tab_names, std::vecto
         ColType lhs_type = lhs_col->type;
         ColType rhs_type;
         if (cond.is_rhs_val) {
-            cond.rhs_val.init_raw(lhs_col->len);
             rhs_type = cond.rhs_val.type;
         } else {
             TabMeta &rhs_tab = sm_manager_->db_.get_table(cond.rhs_col.tab_name);
@@ -156,6 +201,9 @@ void Analyze::check_clause(const std::vector<std::string> &tab_names, std::vecto
                 }
                 cond.rhs_val.set_datetime(datetime_str_to_int64(cond.rhs_val.str_val));
             }
+        }
+        if (cond.is_rhs_val && lhs_type == rhs_type) {
+            cond.rhs_val.init_raw(lhs_col->len);
         }
     }
 }
@@ -186,4 +234,46 @@ CompOp Analyze::convert_sv_comp_op(ast::SvCompOp op) {
         {ast::SV_OP_GT, OP_GT}, {ast::SV_OP_LE, OP_LE}, {ast::SV_OP_GE, OP_GE},
     };
     return m.at(op);
+}
+
+ColType Analyze::resolve_expr_type(const std::shared_ptr<ast::Expr> &expr, const std::vector<ColMeta> &all_cols) {
+    if (std::dynamic_pointer_cast<ast::IntLit>(expr)) {
+        return TYPE_INT;
+    }
+    if (std::dynamic_pointer_cast<ast::FloatLit>(expr)) {
+        return TYPE_FLOAT;
+    }
+    if (std::dynamic_pointer_cast<ast::StringLit>(expr)) {
+        return TYPE_STRING;
+    }
+    if (auto col = std::dynamic_pointer_cast<ast::Col>(expr)) {
+        TabCol resolved = check_column(all_cols, {.tab_name = col->tab_name, .col_name = col->col_name});
+        col->tab_name = resolved.tab_name;
+        col->col_name = resolved.col_name;
+        for (const auto &meta : all_cols) {
+            if (meta.tab_name == resolved.tab_name && meta.name == resolved.col_name) {
+                return meta.type;
+            }
+        }
+        throw ColumnNotFoundError(resolved.tab_name + "." + resolved.col_name);
+    }
+    if (auto unary = std::dynamic_pointer_cast<ast::UnaryExpr>(expr)) {
+        ColType rhs_type = resolve_expr_type(unary->rhs, all_cols);
+        if (rhs_type == TYPE_STRING) {
+            throw IncompatibleTypeError(coltype2str(rhs_type), "NUMERIC");
+        }
+        return rhs_type;
+    }
+    if (auto arith = std::dynamic_pointer_cast<ast::ArithExpr>(expr)) {
+        ColType lhs_type = resolve_expr_type(arith->lhs, all_cols);
+        ColType rhs_type = resolve_expr_type(arith->rhs, all_cols);
+        if (lhs_type == TYPE_STRING || rhs_type == TYPE_STRING) {
+            throw IncompatibleTypeError(coltype2str(lhs_type), coltype2str(rhs_type));
+        }
+        if (lhs_type == TYPE_FLOAT || rhs_type == TYPE_FLOAT) {
+            return TYPE_FLOAT;
+        }
+        return TYPE_INT;
+    }
+    throw InternalError("Unexpected set expression type");
 }

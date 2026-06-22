@@ -978,7 +978,7 @@ class IndexModuleTest : public ::testing::Test {
 };
 
 TEST_F(IndexModuleTest, InsertLookupScanAndDelete) {
-    std::vector<int> keys(200);
+    std::vector<int> keys(1000);
     std::iota(keys.begin(), keys.end(), 0);
     std::mt19937 rng(123);
     std::shuffle(keys.begin(), keys.end(), rng);
@@ -988,7 +988,7 @@ TEST_F(IndexModuleTest, InsertLookupScanAndDelete) {
         ih_->insert_entry(reinterpret_cast<char *>(&key), rid, nullptr);
     }
 
-    for (int key = 0; key < 200; ++key) {
+    for (int key = 0; key < 1000; ++key) {
         std::vector<Rid> result;
         ASSERT_TRUE(ih_->get_value(reinterpret_cast<char *>(&key), &result, nullptr));
         ASSERT_EQ(1U, result.size());
@@ -1009,11 +1009,11 @@ TEST_F(IndexModuleTest, InsertLookupScanAndDelete) {
     }
     EXPECT_EQ(upper_key + 1, expected);
 
-    for (int key = 0; key < 200; key += 2) {
+    for (int key = 0; key < 1000; key += 2) {
         EXPECT_TRUE(ih_->delete_entry(reinterpret_cast<char *>(&key), nullptr));
     }
 
-    for (int key = 0; key < 200; ++key) {
+    for (int key = 0; key < 1000; ++key) {
         std::vector<Rid> result;
         bool found = ih_->get_value(reinterpret_cast<char *>(&key), &result, nullptr);
         if (key % 2 == 0) {
@@ -1022,5 +1022,53 @@ TEST_F(IndexModuleTest, InsertLookupScanAndDelete) {
             ASSERT_TRUE(found);
             EXPECT_EQ(key, result[0].page_no);
         }
+    }
+}
+
+TEST_F(IndexModuleTest, DeleteAllAndReinsert) {
+    for (int key = 0; key < 128; ++key) {
+        ih_->insert_entry(reinterpret_cast<char *>(&key), Rid{key, key}, nullptr);
+    }
+
+    for (int key = 0; key < 128; ++key) {
+        EXPECT_TRUE(ih_->delete_entry(reinterpret_cast<char *>(&key), nullptr));
+    }
+
+    for (int key = 0; key < 128; ++key) {
+        std::vector<Rid> result;
+        EXPECT_FALSE(ih_->get_value(reinterpret_cast<char *>(&key), &result, nullptr));
+    }
+
+    int key = 777;
+    Rid rid{77, 7};
+    ih_->insert_entry(reinterpret_cast<char *>(&key), rid, nullptr);
+    std::vector<Rid> result;
+    ASSERT_TRUE(ih_->get_value(reinterpret_cast<char *>(&key), &result, nullptr));
+    ASSERT_EQ(1U, result.size());
+    EXPECT_EQ(rid.page_no, result[0].page_no);
+    EXPECT_EQ(rid.slot_no, result[0].slot_no);
+}
+
+TEST_F(IndexModuleTest, ConcurrentInsertDoesNotCrash) {
+    constexpr int keys_per_thread = 500;
+    std::thread t1([this]() {
+        for (int key = 0; key < keys_per_thread; ++key) {
+            ih_->insert_entry(reinterpret_cast<char *>(&key), Rid{key, key + 1}, nullptr);
+        }
+    });
+    std::thread t2([this]() {
+        for (int key = keys_per_thread; key < 2 * keys_per_thread; ++key) {
+            ih_->insert_entry(reinterpret_cast<char *>(&key), Rid{key, key + 1}, nullptr);
+        }
+    });
+    t1.join();
+    t2.join();
+
+    for (int key = 0; key < 2 * keys_per_thread; ++key) {
+        std::vector<Rid> result;
+        ASSERT_TRUE(ih_->get_value(reinterpret_cast<char *>(&key), &result, nullptr));
+        ASSERT_EQ(1U, result.size());
+        EXPECT_EQ(key, result[0].page_no);
+        EXPECT_EQ(key + 1, result[0].slot_no);
     }
 }

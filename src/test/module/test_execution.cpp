@@ -38,11 +38,14 @@ See the Mulan PSL v2 for more details. */
 #include <string>
 #include <vector>
 
+#include "parser/ast.h"
+#include "common/config.h"
 #include "execution/execution_manager.h"
 #include "execution/executor_abstract.h"
 #include "execution/executor_delete.h"
 #include "execution/executor_index_scan.h"
 #include "execution/executor_insert.h"
+#include "execution/executor_load.h"
 #include "execution/executor_nestedloop_join.h"
 #include "execution/executor_projection.h"
 #include "execution/executor_seq_scan.h"
@@ -163,6 +166,18 @@ class ExecutorTest : public ::testing::Test {
         c.rhs_val = val;
         c.op = op;
         return c;
+    }
+
+    static std::shared_ptr<ast::Expr> make_col_expr(const std::string &tab, const std::string &col) {
+        return std::make_shared<ast::Col>(tab, col);
+    }
+
+    static std::shared_ptr<ast::Expr> make_int_expr(int v) {
+        return std::make_shared<ast::IntLit>(v);
+    }
+
+    static std::shared_ptr<ast::Expr> make_float_expr(float v) {
+        return std::make_shared<ast::FloatLit>(v);
     }
 };
 
@@ -286,6 +301,71 @@ TEST_F(ExecutorTest, UpdateRecord) {
     EXPECT_FLOAT_EQ(*(float *)(verify_rec->data + tab.cols[2].offset), 100.0f);
 }
 
+TEST_F(ExecutorTest, UpdateRecordWithExpression) {
+    auto tab = get_tab(TABLE1);
+    auto fh = get_fh(TABLE1);
+
+    auto insert = std::make_unique<InsertExecutor>(sm_manager_, TABLE1,
+        std::vector<Value>{make_int_val(3), make_str_val("Expr"), make_float_val(1.5f)}, context_);
+    insert->Next();
+
+    std::vector<Rid> rids;
+    {
+        std::vector<Condition> empty_conds;
+        auto seq = std::make_unique<SeqScanExecutor>(sm_manager_, TABLE1, empty_conds, context_);
+        for (seq->beginTuple(); !seq->is_end(); seq->nextTuple()) {
+            rids.push_back(seq->rid());
+        }
+    }
+    ASSERT_EQ(rids.size(), 1);
+
+    SetClause set_clause;
+    set_clause.lhs = make_tabcol(TABLE1, "score");
+    set_clause.rhs_expr = std::make_shared<ast::ArithExpr>(
+        std::make_shared<ast::ArithExpr>(make_col_expr(TABLE1, "id"), ast::SV_OP_MUL, make_int_expr(2)),
+        ast::SV_OP_ADD,
+        make_col_expr(TABLE1, "score"));
+
+    auto update = std::make_unique<UpdateExecutor>(sm_manager_, TABLE1,
+        std::vector<SetClause>{set_clause},
+        std::vector<Condition>{}, rids, context_);
+    update->Next();
+
+    auto verify_rec = fh->get_record(rids[0], context_);
+    EXPECT_FLOAT_EQ(*(float *)(verify_rec->data + tab.cols[2].offset), 7.5f);
+}
+
+TEST_F(ExecutorTest, UpdateRecordWithUnaryMinusExpression) {
+    auto tab = get_tab(TABLE1);
+    auto fh = get_fh(TABLE1);
+
+    auto insert = std::make_unique<InsertExecutor>(sm_manager_, TABLE1,
+        std::vector<Value>{make_int_val(1), make_str_val("Neg"), make_float_val(4.0f)}, context_);
+    insert->Next();
+
+    std::vector<Rid> rids;
+    {
+        std::vector<Condition> empty_conds;
+        auto seq = std::make_unique<SeqScanExecutor>(sm_manager_, TABLE1, empty_conds, context_);
+        for (seq->beginTuple(); !seq->is_end(); seq->nextTuple()) {
+            rids.push_back(seq->rid());
+        }
+    }
+    ASSERT_EQ(rids.size(), 1);
+
+    SetClause set_clause;
+    set_clause.lhs = make_tabcol(TABLE1, "score");
+    set_clause.rhs_expr = std::make_shared<ast::UnaryExpr>(ast::SV_OP_NEG, make_col_expr(TABLE1, "score"));
+
+    auto update = std::make_unique<UpdateExecutor>(sm_manager_, TABLE1,
+        std::vector<SetClause>{set_clause},
+        std::vector<Condition>{}, rids, context_);
+    update->Next();
+
+    auto verify_rec = fh->get_record(rids[0], context_);
+    EXPECT_FLOAT_EQ(*(float *)(verify_rec->data + tab.cols[2].offset), -4.0f);
+}
+
 // ---------- 4. DeleteExecutor ----------
 TEST_F(ExecutorTest, DeleteRecord) {
     // 插入一条记录
@@ -316,6 +396,52 @@ TEST_F(ExecutorTest, DeleteRecord) {
         seq->beginTuple();
         EXPECT_TRUE(seq->is_end());
     }
+}
+
+TEST_F(ExecutorTest, SelectRespectsOutputFileToggle) {
+    auto insert = std::make_unique<InsertExecutor>(sm_manager_, TABLE1,
+        std::vector<Value>{make_int_val(1), make_str_val("Silent"), make_float_val(50.0f)}, context_);
+    insert->Next();
+
+    if (disk_manager_->is_file("output.txt")) {
+        disk_manager_->destroy_file("output.txt");
+    }
+    g_output_file_on.store(false);
+
+    std::vector<Condition> empty_conds;
+    char data_send[4096] = {};
+    int offset = 0;
+    Context select_ctx(nullptr, nullptr, nullptr, data_send, &offset);
+    auto seq = std::make_unique<SeqScanExecutor>(sm_manager_, TABLE1, empty_conds, &select_ctx);
+    auto proj = std::make_unique<ProjectionExecutor>(std::move(seq), std::vector<TabCol>{make_tabcol(TABLE1, "id")});
+    QlManager ql(sm_manager_, nullptr);
+    ql.select_from(std::move(proj), {make_tabcol(TABLE1, "id")}, &select_ctx);
+
+    EXPECT_FALSE(disk_manager_->is_file("output.txt"));
+    g_output_file_on.store(true);
+}
+
+TEST_F(ExecutorTest, LoadExecutorLoadsCsv) {
+    const std::string csv_path = "students.csv";
+    {
+        std::ofstream csv(csv_path);
+        csv << "id,name,score\n";
+        csv << "1,Alice,95.5\n";
+        csv << "2,Bob,88.0\n";
+    }
+
+    LoadExecutor load(sm_manager_, TABLE1, csv_path, context_);
+    EXPECT_NO_THROW(load.Next());
+
+    std::vector<Condition> empty_conds;
+    auto seq = std::make_unique<SeqScanExecutor>(sm_manager_, TABLE1, empty_conds, context_);
+    int count = 0;
+    for (seq->beginTuple(); !seq->is_end(); seq->nextTuple()) {
+        auto rec = seq->Next();
+        ASSERT_NE(rec, nullptr);
+        count++;
+    }
+    EXPECT_EQ(count, 2);
 }
 
 // ---------- 5. ProjectionExecutor ----------

@@ -67,7 +67,7 @@
 
 
 /* First part of user prologue.  */
-#line 1 "/home/seako/rmdb/src/parser/yacc.y"
+#line 1 "/home/xixixi/rmdb-optimizer/src/parser/yacc.y"
 
 #include "ast.h"
 #include "yacc.tab.h"
@@ -82,7 +82,7 @@ void yyerror(YYLTYPE *locp, const char* s) {
 
 using namespace ast;
 
-#line 86 "/home/seako/rmdb/src/parser/yacc.tab.cpp"
+#line 86 "/home/xixixi/rmdb-optimizer/src/parser/yacc.tab.cpp"
 
 # ifndef YY_CAST
 #  ifdef __cplusplus
@@ -520,14 +520,14 @@ union yyalloc
 #endif /* !YYCOPY_NEEDED */
 
 /* YYFINAL -- State number of the termination state.  */
-#define YYFINAL  39
+#define YYFINAL  43
 /* YYLAST -- Last index in YYTABLE.  */
-#define YYLAST   112
+#define YYLAST   136
 
 /* YYNTOKENS -- Number of terminals.  */
 #define YYNTOKENS  53
 /* YYNNTS -- Number of nonterminals.  */
-#define YYNNTS  29
+#define YYNNTS  30
 /* YYNRULES -- Number of rules.  */
 #define YYNRULES  71
 /* YYNSTATES -- Number of states.  */
@@ -696,7 +696,7 @@ static const yytype_uint8 yydefgoto[] =
 /* YYTABLE[YYPACT[STATE-NUM]] -- What to do in state STATE-NUM.  If
    positive, shift that token.  If negative, reduce the rule whose
    number is the opposite.  If YYTABLE_NINF, syntax error.  */
-static const yytype_int8 yytable[] =
+static const yytype_int16 yytable[] =
 {
       34,    28,    60,    55,    31,    64,    67,    69,    69,   106,
      126,    55,    23,    32,    78,    25,   127,    92,    93,    94,
@@ -712,7 +712,7 @@ static const yytype_int8 yytable[] =
      111,   116,   123
 };
 
-static const yytype_int8 yycheck[] =
+static const yytype_uint8 yycheck[] =
 {
        8,     4,    47,    17,     7,    50,    51,    52,    53,    77,
        8,    17,     6,    40,    28,     6,    14,    41,    42,    43,
@@ -1626,7 +1626,7 @@ yyreduce:
   switch (yyn)
     {
   case 2: /* start: stmt ';'  */
-#line 57 "/home/seako/rmdb/src/parser/yacc.y"
+#line 61 "/home/xixixi/rmdb-optimizer/src/parser/yacc.y"
     {
         parse_tree = (yyvsp[-1].sv_node);
         YYACCEPT;
@@ -1635,7 +1635,7 @@ yyreduce:
     break;
 
   case 3: /* start: HELP  */
-#line 62 "/home/seako/rmdb/src/parser/yacc.y"
+#line 66 "/home/xixixi/rmdb-optimizer/src/parser/yacc.y"
     {
         parse_tree = std::make_shared<Help>();
         YYACCEPT;
@@ -1644,7 +1644,7 @@ yyreduce:
     break;
 
   case 4: /* start: EXIT  */
-#line 67 "/home/seako/rmdb/src/parser/yacc.y"
+#line 71 "/home/xixixi/rmdb-optimizer/src/parser/yacc.y"
     {
         parse_tree = nullptr;
         YYACCEPT;
@@ -1653,7 +1653,7 @@ yyreduce:
     break;
 
   case 5: /* start: T_EOF  */
-#line 72 "/home/seako/rmdb/src/parser/yacc.y"
+#line 76 "/home/xixixi/rmdb-optimizer/src/parser/yacc.y"
     {
         parse_tree = nullptr;
         YYACCEPT;
@@ -1662,7 +1662,7 @@ yyreduce:
     break;
 
   case 10: /* txnStmt: TXN_BEGIN  */
-#line 87 "/home/seako/rmdb/src/parser/yacc.y"
+#line 91 "/home/xixixi/rmdb-optimizer/src/parser/yacc.y"
     {
         (yyval.sv_node) = std::make_shared<TxnBegin>();
     }
@@ -1670,7 +1670,7 @@ yyreduce:
     break;
 
   case 11: /* txnStmt: TXN_COMMIT  */
-#line 91 "/home/seako/rmdb/src/parser/yacc.y"
+#line 95 "/home/xixixi/rmdb-optimizer/src/parser/yacc.y"
     {
         (yyval.sv_node) = std::make_shared<TxnCommit>();
     }
@@ -1678,7 +1678,7 @@ yyreduce:
     break;
 
   case 12: /* txnStmt: TXN_ABORT  */
-#line 95 "/home/seako/rmdb/src/parser/yacc.y"
+#line 99 "/home/xixixi/rmdb-optimizer/src/parser/yacc.y"
     {
         (yyval.sv_node) = std::make_shared<TxnAbort>();
     }
@@ -1686,7 +1686,7 @@ yyreduce:
     break;
 
   case 13: /* txnStmt: TXN_ROLLBACK  */
-#line 99 "/home/seako/rmdb/src/parser/yacc.y"
+#line 103 "/home/xixixi/rmdb-optimizer/src/parser/yacc.y"
     {
         (yyval.sv_node) = std::make_shared<TxnRollback>();
     }
@@ -1694,7 +1694,7 @@ yyreduce:
     break;
 
   case 14: /* dbStmt: SHOW TABLES  */
-#line 106 "/home/seako/rmdb/src/parser/yacc.y"
+#line 110 "/home/xixixi/rmdb-optimizer/src/parser/yacc.y"
     {
         (yyval.sv_node) = std::make_shared<ShowTables>();
     }
@@ -1702,7 +1702,7 @@ yyreduce:
     break;
 
   case 15: /* ddl: CREATE TABLE tbName '(' fieldList ')'  */
-#line 113 "/home/seako/rmdb/src/parser/yacc.y"
+#line 117 "/home/xixixi/rmdb-optimizer/src/parser/yacc.y"
     {
         (yyval.sv_node) = std::make_shared<CreateTable>((yyvsp[-3].sv_str), (yyvsp[-1].sv_fields));
     }
@@ -1710,7 +1710,7 @@ yyreduce:
     break;
 
   case 16: /* ddl: DROP TABLE tbName  */
-#line 117 "/home/seako/rmdb/src/parser/yacc.y"
+#line 121 "/home/xixixi/rmdb-optimizer/src/parser/yacc.y"
     {
         (yyval.sv_node) = std::make_shared<DropTable>((yyvsp[0].sv_str));
     }
@@ -1718,7 +1718,7 @@ yyreduce:
     break;
 
   case 17: /* ddl: DESC tbName  */
-#line 121 "/home/seako/rmdb/src/parser/yacc.y"
+#line 125 "/home/xixixi/rmdb-optimizer/src/parser/yacc.y"
     {
         (yyval.sv_node) = std::make_shared<DescTable>((yyvsp[0].sv_str));
     }
@@ -1726,7 +1726,7 @@ yyreduce:
     break;
 
   case 18: /* ddl: CREATE INDEX tbName '(' colNameList ')'  */
-#line 125 "/home/seako/rmdb/src/parser/yacc.y"
+#line 129 "/home/xixixi/rmdb-optimizer/src/parser/yacc.y"
     {
         (yyval.sv_node) = std::make_shared<CreateIndex>((yyvsp[-3].sv_str), (yyvsp[-1].sv_strs));
     }
@@ -1734,7 +1734,7 @@ yyreduce:
     break;
 
   case 19: /* ddl: DROP INDEX tbName '(' colNameList ')'  */
-#line 129 "/home/seako/rmdb/src/parser/yacc.y"
+#line 133 "/home/xixixi/rmdb-optimizer/src/parser/yacc.y"
     {
         (yyval.sv_node) = std::make_shared<DropIndex>((yyvsp[-3].sv_str), (yyvsp[-1].sv_strs));
     }
@@ -1742,7 +1742,7 @@ yyreduce:
     break;
 
   case 20: /* dml: INSERT INTO tbName VALUES '(' valueList ')'  */
-#line 136 "/home/seako/rmdb/src/parser/yacc.y"
+#line 140 "/home/xixixi/rmdb-optimizer/src/parser/yacc.y"
     {
         (yyval.sv_node) = std::make_shared<InsertStmt>((yyvsp[-4].sv_str), (yyvsp[-1].sv_vals));
     }
@@ -1750,87 +1750,95 @@ yyreduce:
     break;
 
   case 21: /* dml: DELETE FROM tbName optWhereClause  */
-#line 140 "/home/seako/rmdb/src/parser/yacc.y"
+#line 144 "/home/xixixi/rmdb-optimizer/src/parser/yacc.y"
     {
         (yyval.sv_node) = std::make_shared<DeleteStmt>((yyvsp[-1].sv_str), (yyvsp[0].sv_conds));
     }
 #line 1758 "/home/seako/rmdb/src/parser/yacc.tab.cpp"
     break;
 
-  case 22: /* dml: UPDATE tbName SET setClauses optWhereClause  */
-#line 144 "/home/seako/rmdb/src/parser/yacc.y"
+  case 22: /* dml: LOAD loadFile INTO tbName  */
+#line 148 "/home/xixixi/rmdb-optimizer/src/parser/yacc.y"
+    {
+        (yyval.sv_node) = std::make_shared<LoadStmt>((yyvsp[0].sv_str), (yyvsp[-2].sv_str));
+    }
+#line 1782 "/home/xixixi/rmdb-optimizer/src/parser/yacc.tab.cpp"
+    break;
+
+  case 23: /* dml: UPDATE tbName SET setClauses optWhereClause  */
+#line 152 "/home/xixixi/rmdb-optimizer/src/parser/yacc.y"
     {
         (yyval.sv_node) = std::make_shared<UpdateStmt>((yyvsp[-3].sv_str), (yyvsp[-1].sv_set_clauses), (yyvsp[0].sv_conds));
     }
 #line 1766 "/home/seako/rmdb/src/parser/yacc.tab.cpp"
     break;
 
-  case 23: /* dml: SELECT selector FROM tableList optWhereClause opt_order_clause  */
-#line 148 "/home/seako/rmdb/src/parser/yacc.y"
+  case 24: /* dml: SELECT selector FROM tableList optWhereClause opt_order_clause  */
+#line 156 "/home/xixixi/rmdb-optimizer/src/parser/yacc.y"
     {
         (yyval.sv_node) = std::make_shared<SelectStmt>((yyvsp[-4].sv_cols), (yyvsp[-2].sv_strs), (yyvsp[-1].sv_conds), (yyvsp[0].sv_orderby));
     }
 #line 1774 "/home/seako/rmdb/src/parser/yacc.tab.cpp"
     break;
 
-  case 24: /* fieldList: field  */
-#line 155 "/home/seako/rmdb/src/parser/yacc.y"
+  case 25: /* fieldList: field  */
+#line 163 "/home/xixixi/rmdb-optimizer/src/parser/yacc.y"
     {
         (yyval.sv_fields) = std::vector<std::shared_ptr<Field>>{(yyvsp[0].sv_field)};
     }
 #line 1782 "/home/seako/rmdb/src/parser/yacc.tab.cpp"
     break;
 
-  case 25: /* fieldList: fieldList ',' field  */
-#line 159 "/home/seako/rmdb/src/parser/yacc.y"
+  case 26: /* fieldList: fieldList ',' field  */
+#line 167 "/home/xixixi/rmdb-optimizer/src/parser/yacc.y"
     {
         (yyval.sv_fields).push_back((yyvsp[0].sv_field));
     }
 #line 1790 "/home/seako/rmdb/src/parser/yacc.tab.cpp"
     break;
 
-  case 26: /* colNameList: colName  */
-#line 166 "/home/seako/rmdb/src/parser/yacc.y"
+  case 27: /* colNameList: colName  */
+#line 174 "/home/xixixi/rmdb-optimizer/src/parser/yacc.y"
     {
         (yyval.sv_strs) = std::vector<std::string>{(yyvsp[0].sv_str)};
     }
 #line 1798 "/home/seako/rmdb/src/parser/yacc.tab.cpp"
     break;
 
-  case 27: /* colNameList: colNameList ',' colName  */
-#line 170 "/home/seako/rmdb/src/parser/yacc.y"
+  case 28: /* colNameList: colNameList ',' colName  */
+#line 178 "/home/xixixi/rmdb-optimizer/src/parser/yacc.y"
     {
         (yyval.sv_strs).push_back((yyvsp[0].sv_str));
     }
 #line 1806 "/home/seako/rmdb/src/parser/yacc.tab.cpp"
     break;
 
-  case 28: /* field: colName type  */
-#line 177 "/home/seako/rmdb/src/parser/yacc.y"
+  case 29: /* field: colName type  */
+#line 185 "/home/xixixi/rmdb-optimizer/src/parser/yacc.y"
     {
         (yyval.sv_field) = std::make_shared<ColDef>((yyvsp[-1].sv_str), (yyvsp[0].sv_type_len));
     }
 #line 1814 "/home/seako/rmdb/src/parser/yacc.tab.cpp"
     break;
 
-  case 29: /* type: INT  */
-#line 184 "/home/seako/rmdb/src/parser/yacc.y"
+  case 30: /* type: INT  */
+#line 192 "/home/xixixi/rmdb-optimizer/src/parser/yacc.y"
     {
         (yyval.sv_type_len) = std::make_shared<TypeLen>(SV_TYPE_INT, sizeof(int));
     }
 #line 1822 "/home/seako/rmdb/src/parser/yacc.tab.cpp"
     break;
 
-  case 30: /* type: CHAR '(' VALUE_INT ')'  */
-#line 188 "/home/seako/rmdb/src/parser/yacc.y"
+  case 31: /* type: CHAR '(' VALUE_INT ')'  */
+#line 196 "/home/xixixi/rmdb-optimizer/src/parser/yacc.y"
     {
         (yyval.sv_type_len) = std::make_shared<TypeLen>(SV_TYPE_STRING, (yyvsp[-1].sv_int));
     }
 #line 1830 "/home/seako/rmdb/src/parser/yacc.tab.cpp"
     break;
 
-  case 31: /* type: FLOAT  */
-#line 192 "/home/seako/rmdb/src/parser/yacc.y"
+  case 32: /* type: FLOAT  */
+#line 200 "/home/xixixi/rmdb-optimizer/src/parser/yacc.y"
     {
         (yyval.sv_type_len) = std::make_shared<TypeLen>(SV_TYPE_FLOAT, sizeof(float));
     }
@@ -2046,7 +2054,7 @@ yyreduce:
   case 58: /* setClause: colName '=' value  */
 #line 330 "/home/seako/rmdb/src/parser/yacc.y"
     {
-        (yyval.sv_set_clause) = std::make_shared<SetClause>((yyvsp[-2].sv_str), (yyvsp[0].sv_val));
+        (yyval.sv_set_clause) = std::make_shared<SetClause>((yyvsp[-2].sv_str), (yyvsp[0].sv_expr));
     }
 #line 2052 "/home/seako/rmdb/src/parser/yacc.tab.cpp"
     break;

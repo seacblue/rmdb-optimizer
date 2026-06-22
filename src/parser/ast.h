@@ -26,6 +26,10 @@ enum SvCompOp {
     SV_OP_EQ, SV_OP_NE, SV_OP_LT, SV_OP_GT, SV_OP_LE, SV_OP_GE
 };
 
+enum SvArithOp {
+    SV_OP_ADD, SV_OP_SUB, SV_OP_MUL, SV_OP_DIV, SV_OP_NEG
+};
+
 enum OrderByDir {
     OrderBy_DEFAULT,
     OrderBy_ASC,
@@ -109,6 +113,14 @@ struct DropIndex : public TreeNode {
             tab_name(std::move(tab_name_)), col_names(std::move(col_names_)) {}
 };
 
+struct LoadStmt : public TreeNode {
+    std::string tab_name;
+    std::string file_path;
+
+    LoadStmt(std::string tab_name_, std::string file_path_) :
+            tab_name(std::move(tab_name_)), file_path(std::move(file_path_)) {}
+};
+
 struct Expr : public TreeNode {
 };
 
@@ -141,12 +153,28 @@ struct Col : public Expr {
             tab_name(std::move(tab_name_)), col_name(std::move(col_name_)) {}
 };
 
+struct ArithExpr : public Expr {
+    std::shared_ptr<Expr> lhs;
+    SvArithOp op;
+    std::shared_ptr<Expr> rhs;
+
+    ArithExpr(std::shared_ptr<Expr> lhs_, SvArithOp op_, std::shared_ptr<Expr> rhs_) :
+            lhs(std::move(lhs_)), op(op_), rhs(std::move(rhs_)) {}
+};
+
+struct UnaryExpr : public Expr {
+    SvArithOp op;
+    std::shared_ptr<Expr> rhs;
+
+    UnaryExpr(SvArithOp op_, std::shared_ptr<Expr> rhs_) : op(op_), rhs(std::move(rhs_)) {}
+};
+
 struct SetClause : public TreeNode {
     std::string col_name;
-    std::shared_ptr<Value> val;
+    std::shared_ptr<Expr> rhs;
 
-    SetClause(std::string col_name_, std::shared_ptr<Value> val_) :
-            col_name(std::move(col_name_)), val(std::move(val_)) {}
+    SetClause(std::string col_name_, std::shared_ptr<Expr> rhs_) :
+            col_name(std::move(col_name_)), rhs(std::move(rhs_)) {}
 };
 
 struct BinaryExpr : public TreeNode {

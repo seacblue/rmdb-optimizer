@@ -444,13 +444,13 @@ static const YY_CHAR yy_ec[256] =
 
 static const YY_CHAR yy_meta[69] =
     {   0,
-        1,    1,    2,    1,    1,    1,    1,    1,    1,    1,
-        1,    1,    1,    3,    1,    1,    1,    1,    3,    3,
-        3,    3,    3,    3,    3,    3,    3,    3,    3,    3,
-        3,    3,    3,    3,    3,    3,    3,    3,    3,    3,
-        3,    3,    3,    3,    3,    3,    3,    3,    3,    3,
-        3,    3,    3,    3,    3,    3,    3,    3,    3,    3,
-        3,    3,    3,    3,    3,    3,    3,    3
+        1,    2,    3,    2,    1,    2,    2,    1,    1,    2,
+        1,    1,    1,    4,    2,    1,    1,    1,    4,    4,
+        4,    4,    4,    4,    4,    4,    4,    4,    4,    4,
+        4,    4,    4,    4,    4,    4,    4,    4,    4,    4,
+        4,    4,    4,    4,    4,    4,    4,    4,    4,    4,
+        4,    4,    4,    4,    4,    4,    4,    4,    4,    4,
+        4,    4,    4,    4,    4,    4,    4,    4
     } ;
 
 static const flex_int16_t yy_base[170] =
@@ -638,6 +638,7 @@ char *yytext;
 
 #define INITIAL 0
 #define STATE_COMMENT 1
+#define STATE_LOAD_PATH 2
 
 #ifndef YY_NO_UNISTD_H
 /* Special case for "unistd.h", since it is non-ANSI. We include it way
@@ -868,9 +869,9 @@ YY_DECL
 		}
 
 	{
-#line 46 "lex.l"
+#line 47 "lex.l"
 
-#line 48 "lex.l"
+#line 49 "lex.l"
     /* block comment */
 #line 876 "/home/seako/rmdb/src/parser/lex.yy.cpp"
 
@@ -931,153 +932,162 @@ do_action:	/* This label is used only to access EOF actions. */
 
 case 1:
 YY_RULE_SETUP
-#line 49 "lex.l"
+#line 50 "lex.l"
 { BEGIN(STATE_COMMENT); }
 	YY_BREAK
 case 2:
 YY_RULE_SETUP
-#line 50 "lex.l"
+#line 51 "lex.l"
 { BEGIN(INITIAL); }
 	YY_BREAK
 case 3:
 /* rule 3 can match eol */
 YY_RULE_SETUP
-#line 51 "lex.l"
+#line 52 "lex.l"
 { /* ignore the text of the comment */ }
 	YY_BREAK
 case 4:
 YY_RULE_SETUP
-#line 52 "lex.l"
+#line 53 "lex.l"
 { /* ignore *'s that aren't part of */ }
 	YY_BREAK
 /* single line comment */
 case 5:
 YY_RULE_SETUP
-#line 54 "lex.l"
+#line 55 "lex.l"
 { /* ignore single line comment */ }
 	YY_BREAK
 /* white space and new line */
 case 6:
 YY_RULE_SETUP
-#line 56 "lex.l"
+#line 57 "lex.l"
 { /* ignore white space */ }
 	YY_BREAK
 case 7:
 /* rule 7 can match eol */
 YY_RULE_SETUP
-#line 57 "lex.l"
+#line 58 "lex.l"
 { /* ignore new line */ }
 	YY_BREAK
-/* keywords */
 case 8:
 YY_RULE_SETUP
 #line 59 "lex.l"
-{ return SHOW; }
+{ /* ignore white space */ }
 	YY_BREAK
 case 9:
+/* rule 9 can match eol */
 YY_RULE_SETUP
 #line 60 "lex.l"
-{ return TXN_BEGIN; }
+{
+    yylval->sv_str = std::string(yytext + 1, strlen(yytext) - 2);
+    BEGIN(INITIAL);
+    return VALUE_STRING;
+}
 	YY_BREAK
 case 10:
 YY_RULE_SETUP
-#line 61 "lex.l"
-{ return TXN_COMMIT; }
+#line 65 "lex.l"
+{
+    yylval->sv_str = yytext;
+    BEGIN(INITIAL);
+    return FILE_PATH;
+}
 	YY_BREAK
+/* keywords */
 case 11:
 YY_RULE_SETUP
-#line 62 "lex.l"
-{ return TXN_ABORT; }
+#line 71 "lex.l"
+{ return SHOW; }
 	YY_BREAK
 case 12:
 YY_RULE_SETUP
-#line 63 "lex.l"
-{ return TXN_ROLLBACK; }
+#line 72 "lex.l"
+{ return TXN_BEGIN; }
 	YY_BREAK
 case 13:
 YY_RULE_SETUP
-#line 64 "lex.l"
-{ return TABLES; }
+#line 73 "lex.l"
+{ return TXN_COMMIT; }
 	YY_BREAK
 case 14:
 YY_RULE_SETUP
-#line 65 "lex.l"
-{ return CREATE; }
+#line 74 "lex.l"
+{ return TXN_ABORT; }
 	YY_BREAK
 case 15:
 YY_RULE_SETUP
-#line 66 "lex.l"
-{ return TABLE; }
+#line 75 "lex.l"
+{ return TXN_ROLLBACK; }
 	YY_BREAK
 case 16:
 YY_RULE_SETUP
-#line 67 "lex.l"
-{ return DROP; }
+#line 76 "lex.l"
+{ return TABLES; }
 	YY_BREAK
 case 17:
 YY_RULE_SETUP
-#line 68 "lex.l"
-{ return DESC; }
+#line 77 "lex.l"
+{ return CREATE; }
 	YY_BREAK
 case 18:
 YY_RULE_SETUP
-#line 69 "lex.l"
-{ return INSERT; }
+#line 78 "lex.l"
+{ return TABLE; }
 	YY_BREAK
 case 19:
 YY_RULE_SETUP
-#line 70 "lex.l"
-{ return INTO; }
+#line 79 "lex.l"
+{ return DROP; }
 	YY_BREAK
 case 20:
 YY_RULE_SETUP
-#line 71 "lex.l"
-{ return VALUES; }
+#line 80 "lex.l"
+{ return DESC; }
 	YY_BREAK
 case 21:
 YY_RULE_SETUP
-#line 72 "lex.l"
-{ return DELETE; }
+#line 81 "lex.l"
+{ return INSERT; }
 	YY_BREAK
 case 22:
 YY_RULE_SETUP
-#line 73 "lex.l"
-{ return FROM; }
+#line 82 "lex.l"
+{ BEGIN(STATE_LOAD_PATH); return LOAD; }
 	YY_BREAK
 case 23:
 YY_RULE_SETUP
-#line 74 "lex.l"
-{ return WHERE; }
+#line 83 "lex.l"
+{ return INTO; }
 	YY_BREAK
 case 24:
 YY_RULE_SETUP
-#line 75 "lex.l"
-{ return UPDATE; }
+#line 84 "lex.l"
+{ return VALUES; }
 	YY_BREAK
 case 25:
 YY_RULE_SETUP
-#line 76 "lex.l"
-{ return SET; }
+#line 85 "lex.l"
+{ return DELETE; }
 	YY_BREAK
 case 26:
 YY_RULE_SETUP
-#line 77 "lex.l"
-{ return SELECT; }
+#line 86 "lex.l"
+{ return FROM; }
 	YY_BREAK
 case 27:
 YY_RULE_SETUP
-#line 78 "lex.l"
-{ return INT; }
+#line 87 "lex.l"
+{ return WHERE; }
 	YY_BREAK
 case 28:
 YY_RULE_SETUP
-#line 79 "lex.l"
-{ return CHAR; }
+#line 88 "lex.l"
+{ return UPDATE; }
 	YY_BREAK
 case 29:
 YY_RULE_SETUP
-#line 80 "lex.l"
-{ return FLOAT; }
+#line 89 "lex.l"
+{ return SET; }
 	YY_BREAK
 case 30:
 YY_RULE_SETUP
@@ -1124,7 +1134,7 @@ YY_RULE_SETUP
 #line 89 "lex.l"
 {  return BY;  }
 	YY_BREAK
-case 39:
+case 43:
 YY_RULE_SETUP
 #line 90 "lex.l"
 { return ASC; }
@@ -1135,7 +1145,7 @@ YY_RULE_SETUP
 #line 92 "lex.l"
 { return GEQ; }
 	YY_BREAK
-case 41:
+case 45:
 YY_RULE_SETUP
 #line 93 "lex.l"
 { return LEQ; }

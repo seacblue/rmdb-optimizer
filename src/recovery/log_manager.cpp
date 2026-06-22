@@ -9,6 +9,7 @@ MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 See the Mulan PSL v2 for more details. */
 
 #include <cstring>
+#include <unistd.h>
 #include "log_manager.h"
 
 /**
@@ -35,6 +36,9 @@ void LogManager::flush_log_to_disk() {
         return;
     }
     disk_manager_->write_log(log_buffer_.buffer_, log_buffer_.offset_);
+    if (disk_manager_->GetLogFd() != -1 && fsync(disk_manager_->GetLogFd()) < 0) {
+        throw UnixError();
+    }
     persist_lsn_ = global_lsn_ - 1;
     memset(log_buffer_.buffer_, 0, sizeof(log_buffer_.buffer_));
     log_buffer_.offset_ = 0;

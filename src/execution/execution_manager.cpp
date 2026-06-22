@@ -31,6 +31,7 @@ const char *help_info = "Supported SQL syntax:\n"
                    "  DELETE FROM table_name [WHERE where_clause]\n"
                    "  UPDATE table_name SET column_name = value [, column_name = value ...] [WHERE where_clause]\n"
                    "  SELECT selector FROM table_name [WHERE where_clause]\n"
+                   "  set output_file {on|off}\n"
                    "type:\n"
                    "  {INT | FLOAT | CHAR(n)}\n"
                    "where_clause:\n"
@@ -142,13 +143,15 @@ void QlManager::select_from(std::unique_ptr<AbstractExecutor> executorTreeRoot, 
     rec_printer.print_record(captions, context);
     rec_printer.print_separator(context);
     // print header into file
-    std::fstream outfile;
-    outfile.open("output.txt", std::ios::out | std::ios::app);
-    outfile << "|";
-    for(int i = 0; i < captions.size(); ++i) {
-        outfile << " " << captions[i] << " |";
+    std::unique_ptr<std::fstream> outfile;
+    if (g_output_file_on.load()) {
+        outfile = std::make_unique<std::fstream>("output.txt", std::ios::out | std::ios::app);
+        *outfile << "|";
+        for(int i = 0; i < captions.size(); ++i) {
+            *outfile << " " << captions[i] << " |";
+        }
+        *outfile << "\n";
     }
-    outfile << "\n";
 
     // Print records
     size_t num_rec = 0;
@@ -176,14 +179,15 @@ void QlManager::select_from(std::unique_ptr<AbstractExecutor> executorTreeRoot, 
         // print record into buffer
         rec_printer.print_record(columns, context);
         // print record into file
-        outfile << "|";
-        for(int i = 0; i < columns.size(); ++i) {
-            outfile << " " << columns[i] << " |";
+        if (outfile != nullptr) {
+            *outfile << "|";
+            for(int i = 0; i < columns.size(); ++i) {
+                *outfile << " " << columns[i] << " |";
+            }
+            *outfile << "\n";
         }
-        outfile << "\n";
         num_rec++;
     }
-    outfile.close();
     // Print footer into buffer
     rec_printer.print_separator(context);
     // Print record count into buffer
