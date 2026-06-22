@@ -103,18 +103,19 @@ class SeqScanExecutor : public AbstractExecutor {
             // 获取右值
             std::unique_ptr<char[]> rhs_buf;
             const char *rhs_val = nullptr;
+            ColType rhs_type = lhs_type;
             if (cond.is_rhs_val) {
                 rhs_buf = std::make_unique<char[]>(len);
                 memset(rhs_buf.get(), 0, len);
                 if (cond.rhs_val.type == TYPE_INT) {
-                    if (type == TYPE_BIGINT) {
+                    if (lhs_type == TYPE_BIGINT) {
                         // Implicit widen int → bigint
                         *(int64_t *)rhs_buf.get() = static_cast<int64_t>(cond.rhs_val.int_val);
                     } else {
                         *(int *)rhs_buf.get() = cond.rhs_val.int_val;
                     }
                 } else if (cond.rhs_val.type == TYPE_BIGINT) {
-                    if (type == TYPE_INT) {
+                    if (lhs_type == TYPE_INT) {
                         // Implicit narrow bigint → int (if value fits)
                         int64_t v = cond.rhs_val.bigint_val;
                         if (v > INT_MAX || v < INT_MIN) {
@@ -139,7 +140,7 @@ class SeqScanExecutor : public AbstractExecutor {
                     return c.tab_name == cond.rhs_col.tab_name && c.name == cond.rhs_col.col_name;
                 });
                 if (rhs_it == cols.end()) return false;
-                ColType rhs_type = rhs_it->type;
+                rhs_type = rhs_it->type;
                 rhs_val = rec_data + rhs_it->offset;
             }
 
@@ -185,6 +186,10 @@ class SeqScanExecutor : public AbstractExecutor {
             float fa = *(const float *)a, fb = *(const float *)b;
             if (fabs(fa - fb) < 1e-9) return 0;
             return (fa < fb) ? -1 : 1;
+        }
+        if (lhs_type == TYPE_BIGINT || lhs_type == TYPE_DATETIME) {
+            int64_t ia = *(const int64_t *)a, ib = *(const int64_t *)b;
+            return (ia < ib) ? -1 : (ia > ib) ? 1 : 0;
         }
         // TYPE_STRING
         return strncmp(a, b, len);

@@ -288,7 +288,7 @@ TEST_F(BigIntTest, BigIntBoundaryValues) {
 }
 
 // ============================================================
-// 用例 6: BIGINT WHERE 条件（仅测试不影响输出的过滤）
+// 用例 6: BIGINT WHERE 条件（实际比较过滤）
 // ============================================================
 TEST_F(BigIntTest, BigIntWhereClause) {
     expect_success(sql_helper_.execute_sql("CREATE TABLE test_bigint (bid BIGINT, val INT);"));
@@ -303,6 +303,22 @@ TEST_F(BigIntTest, BigIntWhereClause) {
     // 验证数据写入正确
     std::string res = sql_helper_.execute_sql("SELECT * FROM test_bigint;");
     expect_total_records(res, 3);
+
+    // 实际 WHERE 过滤: bid > 1500 (BIGINT 列 vs INT 字面量)
+    res = sql_helper_.execute_sql("SELECT * FROM test_bigint WHERE bid > 1500;");
+    expect_total_records(res, 2);  // 2000, 3000
+
+    // WHERE: bid = 1000
+    res = sql_helper_.execute_sql("SELECT * FROM test_bigint WHERE bid = 1000;");
+    expect_total_records(res, 1);
+
+    // WHERE: val >= 20 (INT 列比较)
+    res = sql_helper_.execute_sql("SELECT * FROM test_bigint WHERE val >= 20;");
+    expect_total_records(res, 2);  // (2000,20), (3000,30)
+
+    // WHERE: bid < 2000 (BIGINT 列 < INT 字面量)
+    res = sql_helper_.execute_sql("SELECT * FROM test_bigint WHERE bid < 2000;");
+    expect_total_records(res, 1);  // (1000,10)
 }
 
 // ============================================================

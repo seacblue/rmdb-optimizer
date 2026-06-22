@@ -106,6 +106,18 @@ target_link_options(test_oj_storage PRIVATE -Wl,--end-group)
 add_test(NAME test_oj_storage COMMAND test_oj_storage
     WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
 
+
+# -------------------- 查询执行 OJ 测试 --------------------
+# Problem 2: SQL 查询执行（SELECT/INSERT/UPDATE/DELETE/JOIN）
+# 编译 & 运行: make test_oj_execution -j$(nproc) && ./bin/test_oj_execution
+add_executable(test_oj_execution oj/test_oj_execution.cpp)
+target_link_libraries(test_oj_execution execution system record index storage lru_replacer parser planner analyze ${TEST_LIBS})
+target_include_directories(test_oj_execution PRIVATE ${TEST_INCLUDES})
+target_link_options(test_oj_execution PRIVATE -Wl,--start-group)
+target_link_options(test_oj_execution PRIVATE -Wl,--end-group)
+add_test(NAME test_oj_execution COMMAND test_oj_execution
+    WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+
 # -------------------- BIGINT OJ 测试 --------------------
 # Problem 3: BIGINT 类型支持
 # 编译 & 运行: make test_oj_bigint -j$(nproc) && ./bin/test_oj_bigint

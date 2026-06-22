@@ -324,7 +324,7 @@ TEST_F(DateTimeTest, DateTimeBoundaryValues) {
 }
 
 // ============================================================
-// 用例 5: WHERE 条件 DATETIME 比较（仅验证数据能正常写入）
+// 用例 5: WHERE 条件 DATETIME 比较（实际过滤）
 // ============================================================
 TEST_F(DateTimeTest, DateTimeWhereClause) {
     expect_success(sql_helper_.execute_sql(
@@ -340,10 +340,25 @@ TEST_F(DateTimeTest, DateTimeWhereClause) {
     // 验证数据写入正确
     std::string res = sql_helper_.execute_sql("SELECT * FROM test_datetime;");
     expect_total_records(res, 3);
+
+    // WHERE dt > '2023-06-01 00:00:00' → 2 条 (June 15, Dec 31)
+    res = sql_helper_.execute_sql(
+        "SELECT * FROM test_datetime WHERE dt > '2023-06-01 00:00:00';");
+    expect_total_records(res, 2);
+
+    // WHERE dt < '2023-06-01 00:00:00' → 1 条 (Jan 1)
+    res = sql_helper_.execute_sql(
+        "SELECT * FROM test_datetime WHERE dt < '2023-06-01 00:00:00';");
+    expect_total_records(res, 1);
+
+    // WHERE val > 10 → 2 条 (20, 30)
+    res = sql_helper_.execute_sql(
+        "SELECT * FROM test_datetime WHERE val > 10;");
+    expect_total_records(res, 2);
 }
 
 // ============================================================
-// 用例 6: WHERE 条件 DATETIME 相等比较（仅验证数据写入）
+// 用例 6: WHERE 条件 DATETIME 相等比较
 // ============================================================
 TEST_F(DateTimeTest, DateTimeWhereEq) {
     expect_success(sql_helper_.execute_sql(
@@ -359,6 +374,21 @@ TEST_F(DateTimeTest, DateTimeWhereEq) {
     // 验证数据写入正确
     std::string res = sql_helper_.execute_sql("SELECT * FROM test_datetime;");
     expect_total_records(res, 3);
+
+    // WHERE dt = '2023-06-15 12:00:00' → 1 条
+    res = sql_helper_.execute_sql(
+        "SELECT * FROM test_datetime WHERE dt = '2023-06-15 12:00:00';");
+    expect_total_records(res, 1);
+
+    // WHERE dt = '2024-01-01 00:00:00' → 0 条（不存在的值）
+    res = sql_helper_.execute_sql(
+        "SELECT * FROM test_datetime WHERE dt = '2024-01-01 00:00:00';");
+    expect_total_records(res, 0);
+
+    // WHERE val = 10 → 1 条
+    res = sql_helper_.execute_sql(
+        "SELECT * FROM test_datetime WHERE val = 10;");
+    expect_total_records(res, 1);
 }
 
 // ============================================================
