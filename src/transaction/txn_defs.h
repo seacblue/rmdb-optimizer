@@ -128,9 +128,9 @@ class TransactionAbortException : public std::exception {
     explicit TransactionAbortException(txn_id_t txn_id, AbortReason abort_reason)
         : txn_id_(txn_id), abort_reason_(abort_reason) {}
 
-    txn_id_t get_transaction_id() { return txn_id_; }
-    AbortReason GetAbortReason() { return abort_reason_; }
-    std::string GetInfo() {
+    txn_id_t get_transaction_id() const { return txn_id_; }
+    AbortReason GetAbortReason() const { return abort_reason_; }
+    std::string GetInfo() const {
         switch (abort_reason_) {
             case AbortReason::LOCK_ON_SHIRINKING: {
                 return "Transaction " + std::to_string(txn_id_) +

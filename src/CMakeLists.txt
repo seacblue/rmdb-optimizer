@@ -23,3 +23,5 @@ target_link_libraries(rmdb parser execution readline pthread planner analyze)
 # unit_test
 add_executable(unit_test unit_test.cpp)
 target_link_libraries(unit_test storage lru_replacer record gtest_main)  # add gtest
+add_test(NAME unit_test COMMAND unit_test
+    WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
