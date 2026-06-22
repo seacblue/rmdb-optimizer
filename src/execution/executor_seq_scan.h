@@ -96,7 +96,7 @@ class SeqScanExecutor : public AbstractExecutor {
                 return c.tab_name == cond.lhs_col.tab_name && c.name == cond.lhs_col.col_name;
             });
             if (lhs_it == cols.end()) return false;   // 列不存在 → 不匹配
-            ColType type = lhs_it->type;
+            ColType lhs_type = lhs_it->type;
             int len = lhs_it->len;
             const char *lhs_val = rec_data + lhs_it->offset;
 
@@ -139,7 +139,7 @@ class SeqScanExecutor : public AbstractExecutor {
                     return c.tab_name == cond.rhs_col.tab_name && c.name == cond.rhs_col.col_name;
                 });
                 if (rhs_it == cols.end()) return false;
-                rhs_type = rhs_it->type;
+                ColType rhs_type = rhs_it->type;
                 rhs_val = rec_data + rhs_it->offset;
             }
 

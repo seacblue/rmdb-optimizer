@@ -19,6 +19,10 @@ See the Mulan PSL v2 for more details. */
 #include "datetime_utils.h"
 #include "record/rm_defs.h"
 
+namespace ast {
+struct Expr;
+}
+
 struct TabCol {
     std::string tab_name;
     std::string col_name;
