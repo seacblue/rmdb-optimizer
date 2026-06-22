@@ -9,6 +9,7 @@ MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 See the Mulan PSL v2 for more details. */
 
 #pragma once
+#include <climits>
 #include "execution_defs.h"
 #include "execution_manager.h"
 #include "executor_abstract.h"
@@ -49,8 +50,20 @@ class InsertExecutor : public AbstractExecutor {
         for (size_t i = 0; i < values_.size(); i++) {
             auto &col = tab_.cols[i];
             auto &val = values_[i];
+            // Allow implicit conversion between INT and BIGINT
             if (col.type != val.type) {
-                throw IncompatibleTypeError(coltype2str(col.type), coltype2str(val.type));
+                if (col.type == TYPE_BIGINT && val.type == TYPE_INT) {
+                    // Widen int to bigint
+                    val.set_bigint(val.int_val);
+                } else if (col.type == TYPE_INT && val.type == TYPE_BIGINT) {
+                    // Check if bigint value fits in int range
+                    if (val.bigint_val > INT_MAX || val.bigint_val < INT_MIN) {
+                        throw IncompatibleTypeError(coltype2str(col.type), coltype2str(val.type));
+                    }
+                    val.set_int(static_cast<int>(val.bigint_val));
+                } else {
+                    throw IncompatibleTypeError(coltype2str(col.type), coltype2str(val.type));
+                }
             }
             val.init_raw(col.len);
             memcpy(rec.data + col.offset, val.raw->data, col.len);

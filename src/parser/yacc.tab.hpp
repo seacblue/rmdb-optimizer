@@ -92,7 +92,8 @@ extern int yydebug;
     IDENTIFIER = 293,              /* IDENTIFIER  */
     VALUE_STRING = 294,            /* VALUE_STRING  */
     VALUE_INT = 295,               /* VALUE_INT  */
-    VALUE_FLOAT = 296              /* VALUE_FLOAT  */
+    VALUE_FLOAT = 296,             /* VALUE_FLOAT  */
+    BIGINT = 297                   /* BIGINT  */
   };
   typedef enum yytokentype yytoken_kind_t;
 #endif

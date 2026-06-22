@@ -11,6 +11,7 @@ See the Mulan PSL v2 for more details. */
 #pragma once
 
 #include <cmath>
+#include <climits>
 #include "execution_defs.h"
 #include "execution_manager.h"
 #include "executor_abstract.h"
@@ -106,7 +107,23 @@ class SeqScanExecutor : public AbstractExecutor {
                 rhs_buf = std::make_unique<char[]>(len);
                 memset(rhs_buf.get(), 0, len);
                 if (cond.rhs_val.type == TYPE_INT) {
-                    *(int *)rhs_buf.get() = cond.rhs_val.int_val;
+                    if (type == TYPE_BIGINT) {
+                        // Implicit widen int → bigint
+                        *(int64_t *)rhs_buf.get() = static_cast<int64_t>(cond.rhs_val.int_val);
+                    } else {
+                        *(int *)rhs_buf.get() = cond.rhs_val.int_val;
+                    }
+                } else if (cond.rhs_val.type == TYPE_BIGINT) {
+                    if (type == TYPE_INT) {
+                        // Implicit narrow bigint → int (if value fits)
+                        int64_t v = cond.rhs_val.bigint_val;
+                        if (v > INT_MAX || v < INT_MIN) {
+                            return false;  // overflow, condition fails
+                        }
+                        *(int *)rhs_buf.get() = static_cast<int>(v);
+                    } else {
+                        *(int64_t *)rhs_buf.get() = cond.rhs_val.bigint_val;
+                    }
                 } else if (cond.rhs_val.type == TYPE_FLOAT) {
                     *(float *)rhs_buf.get() = cond.rhs_val.float_val;
                 } else {
@@ -143,6 +160,10 @@ class SeqScanExecutor : public AbstractExecutor {
     static int compare_value(const char *a, const char *b, ColType type, int len) {
         if (type == TYPE_INT) {
             int ia = *(const int *)a, ib = *(const int *)b;
+            return (ia < ib) ? -1 : (ia > ib) ? 1 : 0;
+        }
+        if (type == TYPE_BIGINT) {
+            int64_t ia = *(const int64_t *)a, ib = *(const int64_t *)b;
             return (ia < ib) ? -1 : (ia > ib) ? 1 : 0;
         }
         if (type == TYPE_FLOAT) {

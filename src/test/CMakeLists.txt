@@ -94,9 +94,8 @@ add_test(NAME test_execution COMMAND test_execution
 
 # ==================== OJ/冒烟测试 (oj/) ====================
 
-# -------------------- OJ 接口兼容性参考测试 --------------------
-# 跨模块集成测试，覆盖 DiskManager / LRUReplacer / BufferPoolManager / RmFileHandle / RmScan
-# 参照题目描述中明确列出的全部接口，提供兼容性验证
+# -------------------- 存储管理 OJ 测试 --------------------
+# Problem 1: 存储管理测试
 # 编译 & 运行: make test_oj -j$(nproc) && ./bin/test_oj
 add_executable(test_oj oj/test_oj_integrity.cpp)
 target_link_libraries(test_oj record storage lru_replacer ${TEST_LIBS})
@@ -105,6 +104,17 @@ target_include_directories(test_oj PRIVATE ${TEST_INCLUDES})
 target_link_options(test_oj PRIVATE -Wl,--start-group)
 target_link_options(test_oj PRIVATE -Wl,--end-group)
 add_test(NAME test_oj COMMAND test_oj
+    WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+
+# -------------------- BIGINT OJ 测试 --------------------
+# Problem 3: BIGINT 类型支持
+# 编译 & 运行: make test_oj_bigint -j$(nproc) && ./bin/test_oj_bigint
+add_executable(test_oj_bigint oj/test_oj_bigint.cpp)
+target_link_libraries(test_oj_bigint execution system record index storage lru_replacer ${TEST_LIBS})
+target_include_directories(test_oj_bigint PRIVATE ${TEST_INCLUDES})
+target_link_options(test_oj_bigint PRIVATE -Wl,--start-group)
+target_link_options(test_oj_bigint PRIVATE -Wl,--end-group)
+add_test(NAME test_oj_bigint COMMAND test_oj_bigint
     WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
 
 # ==================== 压力测试 (stress/) ====================
