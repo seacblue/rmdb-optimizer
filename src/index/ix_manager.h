@@ -59,7 +59,8 @@ class IxManager {
         // Create index file
         disk_manager_->create_file(ix_name);
         // Open index file
-        int fd = disk_manager_->open_file(ix_name);
+        disk_manager_->open_file(ix_name);
+        int fd = disk_manager_->get_file_fd(ix_name);
 
         // Create file header and write to file
         // Theoretically we have: |page_hdr| + (|attr| + |rid|) * n <= PAGE_SIZE
@@ -130,7 +131,7 @@ class IxManager {
         disk_manager_->set_fd2pageno(fd, IX_INIT_NUM_PAGES - 1);  // DEBUG
 
         // Close index file
-        disk_manager_->close_file(fd);
+        disk_manager_->close_file(ix_name);
     }
 
     void destroy_index(const std::string &filename, const std::vector<ColMeta>& index_cols) {
@@ -146,13 +147,15 @@ class IxManager {
     // 注意这里打开文件，创建并返回了index file handle的指针
     std::unique_ptr<IxIndexHandle> open_index(const std::string &filename, const std::vector<ColMeta>& index_cols) {
         std::string ix_name = get_index_name(filename, index_cols);
-        int fd = disk_manager_->open_file(ix_name);
+        disk_manager_->open_file(ix_name);
+        int fd = disk_manager_->get_file_fd(ix_name);
         return std::make_unique<IxIndexHandle>(disk_manager_, buffer_pool_manager_, fd);
     }
 
     std::unique_ptr<IxIndexHandle> open_index(const std::string &filename, const std::vector<std::string>& index_cols) {
         std::string ix_name = get_index_name(filename, index_cols);
-        int fd = disk_manager_->open_file(ix_name);
+        disk_manager_->open_file(ix_name);
+        int fd = disk_manager_->get_file_fd(ix_name);
         return std::make_unique<IxIndexHandle>(disk_manager_, buffer_pool_manager_, fd);
     }
 
@@ -162,6 +165,6 @@ class IxManager {
         disk_manager_->write_page(ih->fd_, IX_FILE_HDR_PAGE, data, ih->file_hdr_->tot_len_);
         // 缓冲区的所有页刷到磁盘，注意这句话必须写在close_file前面
         buffer_pool_manager_->flush_all_pages(ih->fd_);
-        disk_manager_->close_file(ih->fd_);
+        disk_manager_->close_file(disk_manager_->get_file_name(ih->fd_));
     }
 };

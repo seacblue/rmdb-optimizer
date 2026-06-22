@@ -10,7 +10,7 @@
 #
 # 添加新模块的步骤：
 #   1. 在 src/<module>/CMakeLists.txt 中添加 add_library(...)
-#   2. 在 src/test/test_<module>.cpp 中编写测试
+#   2. 在 src/test/module/test_<module>.cpp 中编写测试
 #   3. 在 src/test/CMakeLists.txt 中添加 add_executable(...)
 #   4. 在本脚本的 MODULES 数组中添加一行
 # ============================================================
@@ -28,11 +28,11 @@ MODULES=(
     "buffer_pool_manager:test_bpm:src/storage:80"
     "system:test_sm:src/system:80"
     "record:test_record:src/record:80"
+    "execution:test_execution:src/execution:80"
     # 后续模块（取消注释即可启用）：
     # "index:test_ix:src/index:80"
     # "transaction:test_txn:src/transaction:80"
     # "recovery:test_log:src/recovery:80"
-    "execution:test_execution:src/execution:80"
     # "parser:test_parser:src/parser:80"     # 已有 test_parser 目标
     # "analyze:test_analyze:src/analyze:80"
     # "planner:test_planner:src/optimizer:80"
@@ -109,7 +109,7 @@ echo "============================================"
 ALL_MODULES_COVERED=true
 for entry in "${MODULES[@]}"; do
     IFS=':' read -r lib test_exe dir threshold <<< "$entry"
-    test_file="${PROJECT_DIR}/src/test/test_${lib}.cpp"
+    test_file="${PROJECT_DIR}/src/test/module/test_${lib}.cpp"
 
     if [ -f "$test_file" ]; then
         print_pass "模块 ${lib} → 测试文件存在: test_${lib}.cpp"
@@ -131,7 +131,7 @@ if [ "$ALL_MODULES_COVERED" = false ]; then
     echo ""
     echo -e "${RED}[FAIL] 存在未覆盖的模块。CI 拒绝通过。${NC}"
     echo "添加新模块测试的步骤："
-    echo "  1. 创建 src/test/test_<module>.cpp"
+    echo "  1. 创建 src/test/module/test_<module>.cpp"
     echo "  2. 在 src/test/CMakeLists.txt 中添加 add_executable(test_<abbr> ...)"
     echo "  3. 在 scripts/ci_check.sh 的 MODULES 数组中添加一行"
     echo "  4. 重新编译: make test_<abbr> -j\$(nproc)"

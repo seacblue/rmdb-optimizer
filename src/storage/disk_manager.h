@@ -54,9 +54,9 @@ class DiskManager {
 
     void destroy_file(const std::string &path);
 
-    int open_file(const std::string &path);
+    void open_file(const std::string &path);
 
-    void close_file(int fd);
+    void close_file(const std::string &path);
 
     int get_file_size(const std::string &file_name);
 
