@@ -478,3 +478,222 @@ TEST_F(ExecutorTest, IndexScanFallback) {
     }
     EXPECT_EQ(count, 2);  // Y(90) and Z(85)
 }
+
+// ---------- 9. InsertWithIndex ----------
+TEST_F(ExecutorTest, InsertWithIndex) {
+    // 在 students(id) 上创建索引
+    sm_manager_->create_index(TABLE1, {"id"}, context_);
+    auto tab = get_tab(TABLE1);
+
+    // 插入记录 → 应当命中 insert.h 的索引插入循环
+    auto insert = std::make_unique<InsertExecutor>(sm_manager_, TABLE1,
+        std::vector<Value>{make_int_val(10), make_str_val("IdxIns"), make_float_val(99.0f)}, context_);
+    insert->Next();
+
+    // 验证记录确实插入了
+    auto fh = get_fh(TABLE1);
+    auto rec = fh->get_record(insert->rid(), context_);
+    EXPECT_EQ(*(int *)(rec->data + tab.cols[0].offset), 10);
+}
+
+// ---------- 10. UpdateWithIndex ----------
+TEST_F(ExecutorTest, UpdateWithIndex) {
+    sm_manager_->create_index(TABLE1, {"id"}, context_);
+
+    // 插入一条记录
+    auto insert = std::make_unique<InsertExecutor>(sm_manager_, TABLE1,
+        std::vector<Value>{make_int_val(20), make_str_val("IdxUpd"), make_float_val(85.0f)}, context_);
+    insert->Next();
+
+    // 扫描获取 rid
+    std::vector<Rid> rids;
+    {
+        std::vector<Condition> empty_conds;
+        auto seq = std::make_unique<SeqScanExecutor>(sm_manager_, TABLE1, empty_conds, context_);
+        for (seq->beginTuple(); !seq->is_end(); seq->nextTuple()) {
+            rids.push_back(seq->rid());
+        }
+    }
+    ASSERT_EQ(rids.size(), 1);
+
+    // 更新 → 应当命中 update.h 的旧索引删除 + 新索引插入两条循环
+    SetClause sc;
+    sc.lhs = make_tabcol(TABLE1, "score");
+    sc.rhs = make_float_val(100.0f);
+    auto update = std::make_unique<UpdateExecutor>(sm_manager_, TABLE1,
+        std::vector<SetClause>{sc}, std::vector<Condition>{}, rids, context_);
+    update->Next();
+
+    // 验证更新结果
+    auto fh = get_fh(TABLE1);
+    auto rec = fh->get_record(rids[0], context_);
+    EXPECT_FLOAT_EQ(*(float *)(rec->data + get_tab(TABLE1).cols[2].offset), 100.0f);
+}
+
+// ---------- 11. DeleteWithIndex ----------
+TEST_F(ExecutorTest, DeleteWithIndex) {
+    sm_manager_->create_index(TABLE1, {"id"}, context_);
+
+    // 插入一条记录
+    auto insert = std::make_unique<InsertExecutor>(sm_manager_, TABLE1,
+        std::vector<Value>{make_int_val(30), make_str_val("IdxDel"), make_float_val(60.0f)}, context_);
+    insert->Next();
+
+    // 扫描获取 rid
+    std::vector<Rid> rids;
+    {
+        std::vector<Condition> empty_conds;
+        auto seq = std::make_unique<SeqScanExecutor>(sm_manager_, TABLE1, empty_conds, context_);
+        for (seq->beginTuple(); !seq->is_end(); seq->nextTuple()) {
+            rids.push_back(seq->rid());
+        }
+    }
+    ASSERT_EQ(rids.size(), 1);
+
+    // 删除 → 应当命中 delete.h 的索引删除循环
+    auto del = std::make_unique<DeleteExecutor>(sm_manager_, TABLE1,
+        std::vector<Condition>{}, rids, context_);
+    del->Next();
+
+    // 验证：扫描结果应为空
+    {
+        std::vector<Condition> empty_conds;
+        auto seq = std::make_unique<SeqScanExecutor>(sm_manager_, TABLE1, empty_conds, context_);
+        seq->beginTuple();
+        EXPECT_TRUE(seq->is_end());
+    }
+}
+
+// ---------- 12. SeqScanMultiOps (OP_LT, OP_GT) ----------
+TEST_F(ExecutorTest, SeqScanMultiOps) {
+    // 插入数据：id=1..3, score=95,80,70
+    auto i1 = std::make_unique<InsertExecutor>(sm_manager_, TABLE1,
+        std::vector<Value>{make_int_val(1), make_str_val("A"), make_float_val(95.0f)}, context_);
+    i1->Next();
+    auto i2 = std::make_unique<InsertExecutor>(sm_manager_, TABLE1,
+        std::vector<Value>{make_int_val(2), make_str_val("B"), make_float_val(80.0f)}, context_);
+    i2->Next();
+    auto i3 = std::make_unique<InsertExecutor>(sm_manager_, TABLE1,
+        std::vector<Value>{make_int_val(3), make_str_val("C"), make_float_val(70.0f)}, context_);
+    i3->Next();
+
+    // OP_LT: score < 80 → 1 条 (C=70)
+    {
+        std::vector<Condition> conds;
+        conds.push_back(make_cond_val(TABLE1, "score", OP_LT, make_float_val(80.0f)));
+        auto seq = std::make_unique<SeqScanExecutor>(sm_manager_, TABLE1, conds, context_);
+        int cnt = 0;
+        for (seq->beginTuple(); !seq->is_end(); seq->nextTuple()) { cnt++; }
+        EXPECT_EQ(cnt, 1);
+    }
+
+    // OP_GT: id > 1 → 2 条 (id=2,3)
+    {
+        std::vector<Condition> conds;
+        conds.push_back(make_cond_val(TABLE1, "id", OP_GT, make_int_val(1)));
+        auto seq = std::make_unique<SeqScanExecutor>(sm_manager_, TABLE1, conds, context_);
+        int cnt = 0;
+        for (seq->beginTuple(); !seq->is_end(); seq->nextTuple()) { cnt++; }
+        EXPECT_EQ(cnt, 2);
+    }
+
+    // OP_NE: name != 'A' → 2 条 (B, C)
+    {
+        std::vector<Condition> conds;
+        conds.push_back(make_cond_val(TABLE1, "name", OP_NE, make_str_val("A")));
+        auto seq = std::make_unique<SeqScanExecutor>(sm_manager_, TABLE1, conds, context_);
+        int cnt = 0;
+        for (seq->beginTuple(); !seq->is_end(); seq->nextTuple()) { cnt++; }
+        EXPECT_EQ(cnt, 2);
+    }
+}
+
+// ---------- 13. SortByInt ----------
+TEST_F(ExecutorTest, SortByInt) {
+    // 插入无序 id 记录
+    auto i1 = std::make_unique<InsertExecutor>(sm_manager_, TABLE1,
+        std::vector<Value>{make_int_val(3), make_str_val("C"), make_float_val(70.0f)}, context_);
+    i1->Next();
+    auto i2 = std::make_unique<InsertExecutor>(sm_manager_, TABLE1,
+        std::vector<Value>{make_int_val(1), make_str_val("A"), make_float_val(90.0f)}, context_);
+    i2->Next();
+    auto i3 = std::make_unique<InsertExecutor>(sm_manager_, TABLE1,
+        std::vector<Value>{make_int_val(2), make_str_val("B"), make_float_val(80.0f)}, context_);
+    i3->Next();
+
+    // 按 id（INT 类型）升序排序
+    std::vector<Condition> empty_conds;
+    auto seq = std::make_unique<SeqScanExecutor>(sm_manager_, TABLE1, empty_conds, context_);
+    auto sort = std::make_unique<SortExecutor>(std::move(seq), make_tabcol(TABLE1, "id"), false);
+
+    std::vector<int> ids;
+    for (sort->beginTuple(); !sort->is_end(); sort->nextTuple()) {
+        auto rec = sort->Next();
+        ids.push_back(*(int *)(rec->data + get_tab(TABLE1).cols[0].offset));
+    }
+    ASSERT_EQ(ids.size(), 3);
+    EXPECT_EQ(ids[0], 1);
+    EXPECT_EQ(ids[1], 2);
+    EXPECT_EQ(ids[2], 3);
+}
+
+// ---------- 14. NestedLoopJoinMultiOps (OP_LT, OP_GE) ----------
+TEST_F(ExecutorTest, NestedLoopJoinMultiOps) {
+    // 向 students 插入 2 条: id=1,2
+    auto i1 = std::make_unique<InsertExecutor>(sm_manager_, TABLE1,
+        std::vector<Value>{make_int_val(1), make_str_val("A"), make_float_val(90.0f)}, context_);
+    i1->Next();
+    auto i2 = std::make_unique<InsertExecutor>(sm_manager_, TABLE1,
+        std::vector<Value>{make_int_val(2), make_str_val("B"), make_float_val(80.0f)}, context_);
+    i2->Next();
+
+    // 向 courses 插入 2 条: cid=1,2
+    auto c1 = std::make_unique<InsertExecutor>(sm_manager_, TABLE2,
+        std::vector<Value>{make_int_val(1), make_str_val("Math")}, context_);
+    c1->Next();
+    auto c2 = std::make_unique<InsertExecutor>(sm_manager_, TABLE2,
+        std::vector<Value>{make_int_val(2), make_str_val("CS")}, context_);
+    c2->Next();
+
+    std::vector<Condition> empty_conds;
+
+    // OP_LT: students.id < courses.cid → (1<1)=F, (1<2)=T, (2<1)=F, (2<2)=F → 1 match
+    {
+        auto left = std::make_unique<SeqScanExecutor>(sm_manager_, TABLE1, empty_conds, context_);
+        auto right = std::make_unique<SeqScanExecutor>(sm_manager_, TABLE2, empty_conds, context_);
+        Condition jc;
+        jc.lhs_col = make_tabcol(TABLE1, "id");
+        jc.rhs_col = make_tabcol(TABLE2, "cid");
+        jc.is_rhs_val = false;
+        jc.op = OP_LT;
+        auto join = std::make_unique<NestedLoopJoinExecutor>(std::move(left), std::move(right),
+                                                             std::vector<Condition>{jc});
+        int cnt = 0;
+        for (join->beginTuple(); !join->is_end(); join->nextTuple()) { cnt++; }
+        EXPECT_EQ(cnt, 1);
+    }
+
+    // OP_GE: students.id >= courses.cid → (1>=1)=T, (1>=2)=F, (2>=1)=T, (2>=2)=T → 3 matches
+    {
+        auto left = std::make_unique<SeqScanExecutor>(sm_manager_, TABLE1, empty_conds, context_);
+        auto right = std::make_unique<SeqScanExecutor>(sm_manager_, TABLE2, empty_conds, context_);
+        Condition jc;
+        jc.lhs_col = make_tabcol(TABLE1, "id");
+        jc.rhs_col = make_tabcol(TABLE2, "cid");
+        jc.is_rhs_val = false;
+        jc.op = OP_GE;
+        auto join = std::make_unique<NestedLoopJoinExecutor>(std::move(left), std::move(right),
+                                                             std::vector<Condition>{jc});
+        int cnt = 0;
+        for (join->beginTuple(); !join->is_end(); join->nextTuple()) { cnt++; }
+        EXPECT_EQ(cnt, 3);
+    }
+}
+
+// ---------- 15. ColumnNotFound Throw ----------
+TEST_F(ExecutorTest, ColumnNotFound) {
+    std::vector<Condition> empty_conds;
+    auto seq = std::make_unique<SeqScanExecutor>(sm_manager_, TABLE1, empty_conds, context_);
+    // 调用 get_col_offset 并传入不存在的列 → 应抛出 ColumnNotFoundError
+    EXPECT_THROW(seq->get_col_offset({"students", "nonexistent_col"}), ColumnNotFoundError);
+}
