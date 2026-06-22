@@ -607,10 +607,10 @@ TEST_F(RecordTest, FetchInvalidPageThrows) {
 }
 
 /**
- * @test 文件创建时传空字符串 — 底层 disk_manager 会报 UnixError
+ * @test 文件创建时传空字符串 — 底层 disk_manager 会报 FileNotFoundError
  */
 TEST_F(RecordTest, CreateFileEmptyName) {
-    EXPECT_THROW(rm_manager_->create_file("", 64), UnixError);
+    EXPECT_THROW(rm_manager_->create_file("", 64), FileNotFoundError);
 }
 
 /**
@@ -622,10 +622,10 @@ TEST_F(RecordTest, InvalidRecordSize) {
 }
 
 /**
- * @test 打开不存在的文件 — 底层 disk_manager 会报 UnixError
+ * @test 打开不存在的文件 — 底层 disk_manager 会报 FileNotFoundError
  */
 TEST_F(RecordTest, OpenNonExistentFile) {
-    EXPECT_THROW(rm_manager_->open_file("no_such_file"), UnixError);
+    EXPECT_THROW(rm_manager_->open_file("no_such_file"), FileNotFoundError);
 }
 
 /**
