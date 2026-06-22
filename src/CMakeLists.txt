@@ -12,8 +12,9 @@ add_subdirectory(common)
 add_subdirectory(replacer)
 add_subdirectory(transaction)
 add_subdirectory(recovery)
-add_subdirectory(test)
-
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/CMakeLists.txt")
+    add_subdirectory(test)
+endif()
 
 target_link_libraries(parser execution pthread)
 

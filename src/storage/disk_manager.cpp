@@ -144,10 +144,10 @@ void DiskManager::destroy_file(const std::string &path) {
  * @description: 打开指定路径文件
  * @param {string} &path 文件所在路径
  */
-void DiskManager::open_file(const std::string &path) {
+int DiskManager::open_file(const std::string &path) {
     auto it = path2fd_.find(path);
     if (it != path2fd_.end()) {
-        return;
+        return it->second;
     }
     if (!is_file(path)) {
         throw FileNotFoundError(path);
@@ -158,6 +158,7 @@ void DiskManager::open_file(const std::string &path) {
     }
     path2fd_[path] = fd;
     fd2path_[fd] = path;
+    return fd;
 }
 
 /**
@@ -175,6 +176,18 @@ void DiskManager::close_file(const std::string &path) {
     }
     path2fd_.erase(it);
     fd2path_.erase(fd);
+}
+
+void DiskManager::close_file(int fd) {
+    auto it = fd2path_.find(fd);
+    if (it == fd2path_.end()) {
+        throw FileNotOpenError(fd);
+    }
+    if (close(fd) < 0) {
+        throw UnixError();
+    }
+    path2fd_.erase(it->second);
+    fd2path_.erase(it);
 }
 
 

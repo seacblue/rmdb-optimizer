@@ -24,7 +24,7 @@ set -euo pipefail
 # ============================================================
 MODULES=(
     "lru_replacer:test_lru:src/replacer:80"
-    "disk_manager:test_dm:src/storage:60"
+    "disk_manager:test_dm:src/storage:80"
     "buffer_pool_manager:test_bpm:src/storage:80"
     "system:test_sm:src/system:80"
     "record:test_record:src/record:80"
@@ -234,9 +234,9 @@ if [ "$LCOV_AVAILABLE" = true ] && [ "$ALL_TESTS_PASSED" = true ]; then
             # 输出进度条风格显示
             pct_int=$(echo "$pct" | cut -d. -f1)
             if [ "$pct_int" -ge "$threshold" ]; then
-                print_pass "模块 ${lib}：行覆盖率 ${pct}% ≥ ${threshold}% ✅"
+                print_pass "模块 ${lib}：行覆盖率 ${pct}% ≥ ${threshold}%"
             else
-                print_fail "模块 ${lib}：行覆盖率 ${pct}% < ${threshold}% ❌"
+                print_fail "模块 ${lib}：行覆盖率 ${pct}% < ${threshold}%"
                 ALL_COVERAGE_PASSED=false
             fi
         else
