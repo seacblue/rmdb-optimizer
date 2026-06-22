@@ -18,6 +18,10 @@ See the Mulan PSL v2 for more details. */
 #include "defs.h"
 #include "record/rm_defs.h"
 
+namespace ast {
+struct Expr;
+}
+
 
 struct TabCol {
     std::string tab_name;
@@ -85,4 +89,5 @@ struct Condition {
 struct SetClause {
     TabCol lhs;
     Value rhs;
+    std::shared_ptr<ast::Expr> rhs_expr;
 };

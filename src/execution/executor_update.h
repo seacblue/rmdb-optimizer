@@ -9,6 +9,8 @@ MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 See the Mulan PSL v2 for more details. */
 
 #pragma once
+#include <unordered_map>
+#include "analyze/analyze.h"
 #include "execution_defs.h"
 #include "execution_manager.h"
 #include "executor_abstract.h"
@@ -39,6 +41,11 @@ class UpdateExecutor : public AbstractExecutor {
     }
     std::unique_ptr<RmRecord> Next() override {
         if (rids_.empty()) return nullptr;
+        std::unordered_map<std::string, size_t> col_offset;
+        for (size_t i = 0; i < tab_.cols.size(); ++i) {
+            col_offset[tab_.cols[i].name] = i;
+            col_offset[tab_.cols[i].tab_name + "." + tab_.cols[i].name] = i;
+        }
 
         for (auto &rid : rids_) {
             // 读取当前记录
@@ -62,8 +69,16 @@ class UpdateExecutor : public AbstractExecutor {
             // 应用 SET 子句
             for (auto &clause : set_clauses_) {
                 auto it = get_col(tab_.cols, clause.lhs);
-                clause.rhs.init_raw(it->len);
-                memcpy(rec->data + it->offset, clause.rhs.raw->data, it->len);
+                Value rhs_value = clause.rhs_expr != nullptr
+                    ? eval_set_expr(clause.rhs_expr, rec->data, tab_.cols, col_offset)
+                    : clause.rhs;
+                if (it->type == TYPE_FLOAT && rhs_value.type == TYPE_INT) {
+                    rhs_value.set_float(static_cast<float>(rhs_value.int_val));
+                } else if (it->type == TYPE_INT && rhs_value.type == TYPE_FLOAT) {
+                    rhs_value.set_int(static_cast<int>(rhs_value.float_val));
+                }
+                rhs_value.init_raw(it->len);
+                memcpy(rec->data + it->offset, rhs_value.raw->data, it->len);
             }
 
             // 插入新的索引项

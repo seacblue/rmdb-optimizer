@@ -203,6 +203,7 @@ std::pair<IxNodeHandle *, bool> IxIndexHandle::find_leaf_page(const char *key, O
  * @return bool 返回目标键值对是否存在
  */
 bool IxIndexHandle::get_value(const char *key, std::vector<Rid> *result, Transaction *transaction) {
+    std::lock_guard<std::mutex> lock(root_latch_);
     auto [leaf, root_is_latched] = find_leaf_page(key, Operation::FIND, transaction);
     (void)root_is_latched;
     Rid *rid = nullptr;
@@ -310,6 +311,7 @@ void IxIndexHandle::insert_into_parent(IxNodeHandle *old_node, const char *key, 
  * @return page_id_t 插入到的叶结点的page_no
  */
 page_id_t IxIndexHandle::insert_entry(const char *key, const Rid &value, Transaction *transaction) {
+    std::lock_guard<std::mutex> lock(root_latch_);
     auto [leaf, root_is_latched] = find_leaf_page(key, Operation::INSERT, transaction);
     (void)root_is_latched;
     int old_size = leaf->get_size();
@@ -346,6 +348,7 @@ page_id_t IxIndexHandle::insert_entry(const char *key, const Rid &value, Transac
  * @param transaction 事务指针
  */
 bool IxIndexHandle::delete_entry(const char *key, Transaction *transaction) {
+    std::lock_guard<std::mutex> lock(root_latch_);
     auto [leaf, root_is_latched] = find_leaf_page(key, Operation::DELETE, transaction);
     (void)root_is_latched;
     int old_size = leaf->get_size();
@@ -432,6 +435,15 @@ bool IxIndexHandle::adjust_root(IxNodeHandle *old_root_node) {
         update_root_page_no(child_page_no);
         buffer_pool_manager_->unpin_page(child->get_page_id(), true);
         delete child;
+        return true;
+    }
+    if (old_root_node->is_leaf_page() && old_root_node->get_size() == 0) {
+        file_hdr_->first_leaf_ = old_root_node->get_page_no();
+        file_hdr_->last_leaf_ = old_root_node->get_page_no();
+        old_root_node->set_parent_page_no(IX_NO_PAGE);
+        old_root_node->set_prev_leaf(IX_LEAF_HEADER_PAGE);
+        old_root_node->set_next_leaf(IX_LEAF_HEADER_PAGE);
+        return false;
     }
     return false;
 }

@@ -159,9 +159,11 @@ void SmManager::flush_meta() {
  * @param {Context*} context 
  */
 void SmManager::show_tables(Context* context) {
-    std::fstream outfile;
-    outfile.open("output.txt", std::ios::out | std::ios::app);
-    outfile << "| Tables |\n";
+    std::unique_ptr<std::fstream> outfile;
+    if (g_output_file_on.load()) {
+        outfile = std::make_unique<std::fstream>("output.txt", std::ios::out | std::ios::app);
+        *outfile << "| Tables |\n";
+    }
     RecordPrinter printer(1);
     printer.print_separator(context);
     printer.print_record({"Tables"}, context);
@@ -169,10 +171,11 @@ void SmManager::show_tables(Context* context) {
     for (auto &entry : db_.tabs_) {
         auto &tab = entry.second;
         printer.print_record({tab.name}, context);
-        outfile << "| " << tab.name << " |\n";
+        if (outfile != nullptr) {
+            *outfile << "| " << tab.name << " |\n";
+        }
     }
     printer.print_separator(context);
-    outfile.close();
 }
 
 /**

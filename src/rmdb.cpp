@@ -9,12 +9,12 @@ MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 See the Mulan PSL v2 for more details. */
 
 #include <netinet/in.h>
-#include <readline/history.h>
-#include <readline/readline.h>
 #include <setjmp.h>
 #include <signal.h>
 #include <unistd.h>
 #include <atomic>
+#include <algorithm>
+#include <cctype>
 
 #include "errors.h"
 #include "optimizer/optimizer.h"
@@ -28,6 +28,20 @@ See the Mulan PSL v2 for more details. */
 #define MAX_CONN_LIMIT 8
 
 static bool should_exit = false;
+
+namespace {
+
+std::string trim_copy(const char *input) {
+    std::string str = input == nullptr ? "" : std::string(input);
+    auto begin = std::find_if_not(str.begin(), str.end(), [](unsigned char ch) { return std::isspace(ch); });
+    auto end = std::find_if_not(str.rbegin(), str.rend(), [](unsigned char ch) { return std::isspace(ch); }).base();
+    if (begin >= end) {
+        return "";
+    }
+    return std::string(begin, end);
+}
+
+}  // namespace
 
 // 构建全局所需的管理器对象
 auto disk_manager = std::make_unique<DiskManager>();
@@ -66,6 +80,112 @@ void SetTransaction(txn_id_t *txn_id, Context *context) {
     }
 }
 
+void append_output_file(const std::string &text) {
+    if (!g_output_file_on.load()) {
+        return;
+    }
+    std::fstream outfile;
+    outfile.open("output.txt", std::ios::out | std::ios::app);
+    outfile << text;
+    outfile.close();
+}
+
+bool process_sql_command(const std::string &command, txn_id_t *txn_id, char *data_send, int *offset, bool *should_close) {
+    *should_close = false;
+    std::string trimmed_cmd = trim_copy(command.c_str());
+    if (trimmed_cmd.empty()) {
+        return true;
+    }
+    if (trimmed_cmd == "exit") {
+        *should_close = true;
+        return true;
+    }
+    if (trimmed_cmd == "crash") {
+        std::cout << "Server crash" << std::endl;
+        exit(1);
+    }
+    if (trimmed_cmd == "set output_file off") {
+        g_output_file_on.store(false);
+        return true;
+    }
+    if (trimmed_cmd == "set output_file on") {
+        g_output_file_on.store(true);
+        return true;
+    }
+
+    memset(data_send, '\0', BUFFER_LENGTH);
+    *offset = 0;
+
+    Context context(lock_manager.get(), log_manager.get(), nullptr, data_send, offset);
+    SetTransaction(txn_id, &context);
+
+    bool finish_analyze = false;
+    pthread_mutex_lock(buffer_mutex);
+    YY_BUFFER_STATE buf = yy_scan_string(command.c_str());
+    int parse_ret = yyparse();
+    if (parse_ret == 0 && ast::parse_tree != nullptr) {
+        try {
+            std::shared_ptr<Query> query = analyze->do_analyze(ast::parse_tree);
+            yy_delete_buffer(buf);
+            finish_analyze = true;
+            pthread_mutex_unlock(buffer_mutex);
+            std::shared_ptr<Plan> plan = optimizer->plan_query(query, &context);
+            std::shared_ptr<PortalStmt> portalStmt = portal->start(plan, &context);
+            portal->run(portalStmt, ql_manager.get(), txn_id, &context);
+            portal->drop();
+        } catch (TransactionAbortException &e) {
+            std::string str = "abort\n";
+            memcpy(data_send, str.c_str(), str.length());
+            data_send[str.length()] = '\0';
+            *offset = static_cast<int>(str.length());
+            txn_manager->abort(context.txn_, log_manager.get());
+            std::cout << e.GetInfo() << std::endl;
+            append_output_file(str);
+        } catch (RMDBError &e) {
+            std::cerr << e.what() << std::endl;
+            memcpy(data_send, e.what(), e.get_msg_len());
+            data_send[e.get_msg_len()] = '\n';
+            data_send[e.get_msg_len() + 1] = '\0';
+            *offset = e.get_msg_len() + 1;
+            append_output_file("failure\n");
+        }
+    } else {
+        std::string failure = "failure\n";
+        memcpy(data_send, failure.c_str(), failure.length());
+        data_send[failure.length()] = '\0';
+        *offset = static_cast<int>(failure.length());
+        append_output_file("failure\n");
+    }
+
+    if (finish_analyze == false) {
+        yy_delete_buffer(buf);
+        pthread_mutex_unlock(buffer_mutex);
+    }
+    ast::parse_tree.reset();
+
+    if (context.txn_ != nullptr && context.txn_->get_txn_mode() == false &&
+        context.txn_->get_state() != TransactionState::COMMITTED &&
+        context.txn_->get_state() != TransactionState::ABORTED) {
+        txn_manager->commit(context.txn_, context.log_mgr_);
+    }
+    return true;
+}
+
+void run_stdin_mode() {
+    std::cout << "Socket unavailable, falling back to stdin mode." << std::endl;
+    txn_id_t txn_id = INVALID_TXN_ID;
+    std::string command;
+    while (!should_exit && std::getline(std::cin, command)) {
+        char data_send[BUFFER_LENGTH] = {};
+        int offset = 0;
+        bool should_close = false;
+        process_sql_command(command, &txn_id, data_send, &offset, &should_close);
+        if (should_close) {
+            break;
+        }
+    }
+}
+
 void *client_handler(void *sock_fd) {
     int fd = *((int *)sock_fd);
     pthread_mutex_unlock(sockfd_mutex);
@@ -100,87 +220,20 @@ void *client_handler(void *sock_fd) {
         
         printf("i_recvBytes: %d \n ", i_recvBytes);
 
-        if (strcmp(data_recv, "exit") == 0) {
-            std::cout << "Client exit." << std::endl;
-            break;
-        }
-        if (strcmp(data_recv, "crash") == 0) {
-            std::cout << "Server crash" << std::endl;
-            exit(1);
-        }
-
         std::cout << "Read from client " << fd << ": " << data_recv << std::endl;
 
         memset(data_send, '\0', BUFFER_LENGTH);
         offset = 0;
-
-        // 开启事务，初始化系统所需的上下文信息（包括事务对象指针、锁管理器指针、日志管理器指针、存放结果的buffer、记录结果长度的变量）
-        Context *context = new Context(lock_manager.get(), log_manager.get(), nullptr, data_send, &offset);
-        SetTransaction(&txn_id, context);
-
-        // 用于判断是否已经调用了yy_delete_buffer来删除buf
-        bool finish_analyze = false;
-        pthread_mutex_lock(buffer_mutex);
-        YY_BUFFER_STATE buf = yy_scan_string(data_recv);
-        if (yyparse() == 0) {
-            if (ast::parse_tree != nullptr) {
-                try {
-                    // analyze and rewrite
-                    std::shared_ptr<Query> query = analyze->do_analyze(ast::parse_tree);
-                    yy_delete_buffer(buf);
-                    finish_analyze = true;
-                    pthread_mutex_unlock(buffer_mutex);
-                    // 优化器
-                    std::shared_ptr<Plan> plan = optimizer->plan_query(query, context);
-                    // portal
-                    std::shared_ptr<PortalStmt> portalStmt = portal->start(plan, context);
-                    portal->run(portalStmt, ql_manager.get(), &txn_id, context);
-                    portal->drop();
-                } catch (TransactionAbortException &e) {
-                    // 事务需要回滚，需要把abort信息返回给客户端并写入output.txt文件中
-                    std::string str = "abort\n";
-                    memcpy(data_send, str.c_str(), str.length());
-                    data_send[str.length()] = '\0';
-                    offset = str.length();
-
-                    // 回滚事务
-                    txn_manager->abort(context->txn_, log_manager.get());
-                    std::cout << e.GetInfo() << std::endl;
-
-                    std::fstream outfile;
-                    outfile.open("output.txt", std::ios::out | std::ios::app);
-                    outfile << str;
-                    outfile.close();
-                } catch (RMDBError &e) {
-                    // 遇到异常，需要打印failure到output.txt文件中，并发异常信息返回给客户端
-                    std::cerr << e.what() << std::endl;
-
-                    memcpy(data_send, e.what(), e.get_msg_len());
-                    data_send[e.get_msg_len()] = '\n';
-                    data_send[e.get_msg_len() + 1] = '\0';
-                    offset = e.get_msg_len() + 1;
-
-                    // 将报错信息写入output.txt
-                    std::fstream outfile;
-                    outfile.open("output.txt",std::ios::out | std::ios::app);
-                    outfile << "failure\n";
-                    outfile.close();
-                }
-            }
-        }
-        if(finish_analyze == false) {
-            yy_delete_buffer(buf);
-            pthread_mutex_unlock(buffer_mutex);
+        bool should_close = false;
+        process_sql_command(data_recv, &txn_id, data_send, &offset, &should_close);
+        if (should_close) {
+            std::cout << "Client exit." << std::endl;
+            break;
         }
         // future TODO: 格式化 sql_handler.result, 传给客户端
         // send result with fixed format, use protobuf in the future
         if (write(fd, data_send, offset + 1) == -1) {
             break;
-        }
-        // 如果是单挑语句，需要按照一个完整的事务来执行，所以执行完当前语句后，自动提交事务
-        if(context->txn_->get_txn_mode() == false)
-        {
-            txn_manager->commit(context->txn_, context->log_mgr_);
         }
     }
 
@@ -203,7 +256,11 @@ void start_server() {
 
     // 初始化连接
     sockfd_server = socket(AF_INET, SOCK_STREAM, 0);  // ipv4,TCP
-    assert(sockfd_server != -1);
+    if (sockfd_server == -1) {
+        perror("socket");
+        run_stdin_mode();
+        return;
+    }
     int val = 1;
     setsockopt(sockfd_server, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val));
 
@@ -214,14 +271,18 @@ void start_server() {
     s_addr_in.sin_port = htons(SOCK_PORT);
     fd_temp = bind(sockfd_server, (struct sockaddr *)(&s_addr_in), sizeof(s_addr_in));
     if (fd_temp == -1) {
-        std::cout << "Bind error!" << std::endl;
-        exit(1);
+        perror("bind");
+        close(sockfd_server);
+        run_stdin_mode();
+        return;
     }
 
     fd_temp = listen(sockfd_server, MAX_CONN_LIMIT);
     if (fd_temp == -1) {
-        std::cout << "Listen error!" << std::endl;
-        exit(1);
+        perror("listen");
+        close(sockfd_server);
+        run_stdin_mode();
+        return;
     }
 
     while (!should_exit) {
@@ -289,6 +350,9 @@ int main(int argc, char **argv) {
         }
         // Open database
         sm_manager->open_db(db_name);
+        if (g_output_file_on.load()) {
+            std::ofstream truncate_output("output.txt", std::ios::out | std::ios::trunc);
+        }
 
         // recovery database
         recovery->analyze();
