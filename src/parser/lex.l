@@ -14,6 +14,8 @@
 #include "ast.h"
 #include "yacc.tab.h"
 #include <iostream>
+#include <cerrno>
+#include <cstdlib>
 
 // automatically update location
 #define YY_USER_ACTION \
@@ -112,7 +114,16 @@ single_op ";"|"("|")"|","|"*"|"+"|"-"|"/"|"="|">"|"<"|"."
 }
     /* literals */
 {value_int} {
-    yylval->sv_int = atoll(yytext);
+    errno = 0;
+    long long val = strtoll(yytext, NULL, 10);
+    if (errno == ERANGE) {
+        // Value > LLONG_MAX (e.g. |LLONG_MIN| = 9223372036854775808)
+        // Parse as unsigned and store via two's complement wrap
+        unsigned long long uval = strtoull(yytext, NULL, 10);
+        yylval->sv_int = (int64_t)uval;
+    } else {
+        yylval->sv_int = val;
+    }
     return VALUE_INT;
 }
 {value_float} {

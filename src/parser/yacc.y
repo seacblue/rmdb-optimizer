@@ -3,6 +3,7 @@
 #include "yacc.tab.h"
 #include <iostream>
 #include <memory>
+#include <cstdint>
 
 int yylex(YYSTYPE *yylval, YYLTYPE *yylloc);
 
@@ -233,6 +234,19 @@ value:
     |   VALUE_STRING
     {
         $$ = std::make_shared<StringLit>($1);
+    }
+    |   '-' VALUE_INT
+    {
+        if ($2 == INT64_MIN) {
+            // -INT64_MIN would overflow; the value IS INT64_MIN
+            $$ = std::make_shared<IntLit>(INT64_MIN);
+        } else {
+            $$ = std::make_shared<IntLit>(-$2);
+        }
+    }
+    |   '-' VALUE_FLOAT
+    {
+        $$ = std::make_shared<FloatLit>(-$2);
     }
     ;
 
