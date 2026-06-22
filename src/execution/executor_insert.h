@@ -37,7 +37,13 @@ class InsertExecutor : public AbstractExecutor {
         context_ = context;
     };
 
+    void beginTuple() override { done_ = false; }
+    void nextTuple() override { done_ = true; }
+    bool is_end() const override { return done_; }
+
     std::unique_ptr<RmRecord> Next() override {
+        if (done_) return nullptr;
+        done_ = true;
         // Make record buffer
         RmRecord rec(fh_->get_file_hdr().record_size);
         for (size_t i = 0; i < values_.size(); i++) {
@@ -53,18 +59,21 @@ class InsertExecutor : public AbstractExecutor {
         rid_ = fh_->insert_record(rec.data, context_);
         
         // Insert into index
-        for(size_t i = 0; i < tab_.indexes.size(); ++i) {
-            auto& index = tab_.indexes[i];
+        for(size_t j = 0; j < tab_.indexes.size(); ++j) {
+            auto& index = tab_.indexes[j];
             auto ih = sm_manager_->ihs_.at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
-            char* key = new char[index.col_tot_len];
+            auto key = std::make_unique<char[]>(index.col_tot_len);
             int offset = 0;
-            for(size_t i = 0; i < index.col_num; ++i) {
-                memcpy(key + offset, rec.data + index.cols[i].offset, index.cols[i].len);
-                offset += index.cols[i].len;
+            for(size_t k = 0; k < index.col_num; ++k) {
+                memcpy(key.get() + offset, rec.data + index.cols[k].offset, index.cols[k].len);
+                offset += index.cols[k].len;
             }
-            ih->insert_entry(key, rid_, context_->txn_);
+            ih->insert_entry(key.get(), rid_, context_->txn_);
         }
-        return nullptr;
+        return std::make_unique<RmRecord>(rec);
     }
     Rid &rid() override { return rid_; }
+
+   private:
+    bool done_ = false;
 };

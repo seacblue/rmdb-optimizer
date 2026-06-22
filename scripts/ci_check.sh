@@ -32,7 +32,7 @@ MODULES=(
     # "index:test_ix:src/index:80"
     # "transaction:test_txn:src/transaction:80"
     # "recovery:test_log:src/recovery:80"
-    # "execution:test_exec:src/execution:80"
+    "execution:test_execution:src/execution:80"
     # "parser:test_parser:src/parser:80"     # 已有 test_parser 目标
     # "analyze:test_analyze:src/analyze:80"
     # "planner:test_planner:src/optimizer:80"

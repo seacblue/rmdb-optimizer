@@ -85,7 +85,19 @@ add_test(NAME test_record COMMAND test_record
 #     WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
 # ============================================================
 
-# -------------------- 批量运行脚本 --------------------
+# -------------------- Execution 测试 --------------------
+# 对应源代码: src/execution/ 全部 8 种 Executor
+# 依赖: execution → system, record, index, storage, transaction
+# 编译 & 运行: make test_execution -j$(nproc) && ./bin/test_execution
+add_executable(test_execution test_execution.cpp)
+target_link_libraries(test_execution execution system record index storage lru_replacer ${TEST_LIBS})
+target_include_directories(test_execution PRIVATE ${TEST_INCLUDES})
+target_link_options(test_execution PRIVATE -Wl,--start-group)
+target_link_options(test_execution PRIVATE -Wl,--end-group)
+add_test(NAME test_execution COMMAND test_execution
+    WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+
+# -------------------- 批量运行脚本 ---
 # 不编译任何东西，只提供一个便捷 target 名
 # 用法: make run_all_tests
 # 或在构建目录中: ctest --output-on-failure
