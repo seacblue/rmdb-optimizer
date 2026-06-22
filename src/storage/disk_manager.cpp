@@ -134,8 +134,12 @@ void DiskManager::destroy_file(const std::string &path) {
  * @param {string} &path 文件所在路径
  */
 int DiskManager::open_file(const std::string &path) {
-    if (path2fd_.count(path)) {
-        return path2fd_[path];
+    auto it = path2fd_.find(path);
+    if (it != path2fd_.end()) {
+        return it->second;
+    }
+    if (!is_file(path)) {
+        throw FileNotFoundError(path);
     }
     int fd = open(path.c_str(), O_RDWR);
     if (fd < 0) {

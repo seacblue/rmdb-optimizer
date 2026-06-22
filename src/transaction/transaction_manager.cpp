@@ -129,4 +129,8 @@ void TransactionManager::abort(Transaction * txn, LogManager *log_manager) {
 
     std::lock_guard<std::mutex> lock(latch_);
     txn_map.erase(txn->get_transaction_id());
+<<<<<<< HEAD
 }
+=======
+}
+>>>>>>> 5ce0151 (fix:)
