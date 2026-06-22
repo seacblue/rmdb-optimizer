@@ -50,7 +50,7 @@ add_test(NAME test_sm COMMAND test_sm
 # 对应源代码: src/storage/buffer_pool_manager.cpp
 # 依赖: storage(含 disk_manager + lru_replacer)
 # 编译 & 运行: make test_bpm -j$(nproc) && ./bin/test_bpm
-add_executable(test_bpm test_buffer_pool.cpp)
+add_executable(test_bpm test_buffer_pool_manager.cpp)
 target_link_libraries(test_bpm storage lru_replacer ${TEST_LIBS})
 target_include_directories(test_bpm PRIVATE ${TEST_INCLUDES})
 add_test(NAME test_bpm COMMAND test_bpm
