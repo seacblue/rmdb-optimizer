@@ -432,8 +432,19 @@ TEST_F(BufferPoolManagerConcurrencyTest, ConcurrencyTest) {
 }
 
 // TODO: fix detected memory leaks found by Google Test
+const std::string STORAGE_TEST_DB_NAME = "StorageTest_db";
+
 TEST(StorageTest, SimpleTest) {
     srand((unsigned)time(nullptr));
+
+    // Create and enter test directory (like other tests do)
+    if (!disk_manager->is_dir(STORAGE_TEST_DB_NAME)) {
+        disk_manager->create_dir(STORAGE_TEST_DB_NAME);
+    }
+    ASSERT_TRUE(disk_manager->is_dir(STORAGE_TEST_DB_NAME));
+    if (chdir(STORAGE_TEST_DB_NAME.c_str()) < 0) {
+        throw UnixError();
+    }
 
     /** Test disk_manager */
     std::vector<std::string> filenames(MAX_FILES);  // MAX_FILES=32
@@ -570,6 +581,11 @@ TEST(StorageTest, SimpleTest) {
             assert(false);
         } catch (const FileNotFoundError &e) {
         }
+    }
+
+    // Return to parent directory
+    if (chdir("..") < 0) {
+        throw UnixError();
     }
 }
 

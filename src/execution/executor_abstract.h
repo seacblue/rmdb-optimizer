@@ -26,8 +26,8 @@ class AbstractExecutor {
     virtual size_t tupleLen() const { return 0; };
 
     virtual const std::vector<ColMeta> &cols() const {
-        std::vector<ColMeta> *_cols = nullptr;
-        return *_cols;
+        static std::vector<ColMeta> empty_cols;
+        return empty_cols;
     };
 
     virtual std::string getType() { return "AbstractExecutor"; };
@@ -42,7 +42,10 @@ class AbstractExecutor {
 
     virtual std::unique_ptr<RmRecord> Next() = 0;
 
-    virtual ColMeta get_col_offset(const TabCol &target) { return ColMeta();};
+    ColMeta get_col_offset(const TabCol &target) {
+        auto pos = get_col(cols(), target);
+        return *pos;
+    }
 
     std::vector<ColMeta>::const_iterator get_col(const std::vector<ColMeta> &rec_cols, const TabCol &target) {
         auto pos = std::find_if(rec_cols.begin(), rec_cols.end(), [&](const ColMeta &col) {

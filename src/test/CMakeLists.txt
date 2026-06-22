@@ -46,14 +46,31 @@ target_link_options(test_sm PRIVATE -Wl,--end-group)
 add_test(NAME test_sm COMMAND test_sm
     WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
 
+# -------------------- BufferPoolManager 测试 --------------------
+# 对应源代码: src/storage/buffer_pool_manager.cpp
+# 依赖: storage(含 disk_manager + lru_replacer)
+# 编译 & 运行: make test_bpm -j$(nproc) && ./bin/test_bpm
+add_executable(test_bpm test_buffer_pool_manager.cpp)
+target_link_libraries(test_bpm storage lru_replacer ${TEST_LIBS})
+target_include_directories(test_bpm PRIVATE ${TEST_INCLUDES})
+add_test(NAME test_bpm COMMAND test_bpm
+    WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+
+# -------------------- Record 测试 (RmFileHandle + RmScan) --------------------
+# 对应源代码: src/record/rm_file_handle.cpp + rm_scan.cpp
+# 依赖: record → system, transaction, storage; 需 start-group 解循环
+# 编译 & 运行: make test_record -j$(nproc) && ./bin/test_record
+add_executable(test_record test_record.cpp)
+target_link_libraries(test_record record storage lru_replacer ${TEST_LIBS})
+target_include_directories(test_record PRIVATE ${TEST_INCLUDES})
+# 静态库循环依赖（record↔system）通过 --start-group 解决
+target_link_options(test_record PRIVATE -Wl,--start-group)
+target_link_options(test_record PRIVATE -Wl,--end-group)
+add_test(NAME test_record COMMAND test_record
+    WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+
 # ============================================================
 # 新模块测试添加模板
-#
-# add_executable(test_bpm test_buffer_pool.cpp)
-# target_link_libraries(test_bpm storage lru_replacer ${TEST_LIBS})
-# target_include_directories(test_bpm PRIVATE ${TEST_INCLUDES})
-# add_test(NAME test_bpm COMMAND test_bpm
-#     WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
 #
 # add_executable(test_ix test_ix_index_handle.cpp)
 # target_link_libraries(test_ix index storage lru_replacer ${TEST_LIBS})
@@ -68,7 +85,19 @@ add_test(NAME test_sm COMMAND test_sm
 #     WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
 # ============================================================
 
-# -------------------- 批量运行脚本 --------------------
+# -------------------- Execution 测试 --------------------
+# 对应源代码: src/execution/ 全部 8 种 Executor
+# 依赖: execution → system, record, index, storage, transaction
+# 编译 & 运行: make test_execution -j$(nproc) && ./bin/test_execution
+add_executable(test_execution test_execution.cpp)
+target_link_libraries(test_execution execution system record index storage lru_replacer ${TEST_LIBS})
+target_include_directories(test_execution PRIVATE ${TEST_INCLUDES})
+target_link_options(test_execution PRIVATE -Wl,--start-group)
+target_link_options(test_execution PRIVATE -Wl,--end-group)
+add_test(NAME test_execution COMMAND test_execution
+    WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+
+# -------------------- 批量运行脚本 ---
 # 不编译任何东西，只提供一个便捷 target 名
 # 用法: make run_all_tests
 # 或在构建目录中: ctest --output-on-failure

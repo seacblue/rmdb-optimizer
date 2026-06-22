@@ -25,13 +25,14 @@ set -euo pipefail
 MODULES=(
     "lru_replacer:test_lru:src/replacer:80"
     "disk_manager:test_dm:src/storage:60"
+    "buffer_pool_manager:test_bpm:src/storage:80"
     "system:test_sm:src/system:80"
+    "record:test_record:src/record:80"
     # 后续模块（取消注释即可启用）：
-    # "record:test_record:src/record:80"
     # "index:test_ix:src/index:80"
     # "transaction:test_txn:src/transaction:80"
     # "recovery:test_log:src/recovery:80"
-    # "execution:test_exec:src/execution:80"
+    "execution:test_execution:src/execution:80"
     # "parser:test_parser:src/parser:80"     # 已有 test_parser 目标
     # "analyze:test_analyze:src/analyze:80"
     # "planner:test_planner:src/optimizer:80"

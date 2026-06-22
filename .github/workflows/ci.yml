@@ -27,7 +27,7 @@ jobs:
       # 步骤 1：检出代码
       # -------------------------------------------------------
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -83,7 +83,7 @@ jobs:
       # 步骤 7：上传覆盖率 HTML 报告
       # -------------------------------------------------------
       - name: Upload coverage report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()  # 即使 CI 检查失败也上传
         with:
           name: coverage-report
@@ -94,7 +94,7 @@ jobs:
       # 步骤 8：上传 .gcda/.gcno 文件（调试用）
       # -------------------------------------------------------
       - name: Upload coverage raw data
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: coverage-raw
