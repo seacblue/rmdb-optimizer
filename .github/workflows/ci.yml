@@ -1,0 +1,104 @@
+# ============================================================
+# RMDB CI/CD Pipeline
+#
+# 每次 push/PR 到 main 或 feat/* 分支时触发：
+#   1. 安装依赖（cmake, g++, flex, bison, lcov, readline）
+#   2. 启用覆盖率编译
+#   3. 构建所有目标
+#   4. 用 CTest 运行全部模块测试
+#   5. 检查模块测试完备性 + 行覆盖率阈值
+#   6. 上传覆盖率 HTML 报告作为构建产物
+# ============================================================
+
+name: RMDB CI
+
+on:
+  push:
+    branches: [main, feat/*, dev/*]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      # -------------------------------------------------------
+      # 步骤 1：检出代码
+      # -------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      # -------------------------------------------------------
+      # 步骤 2：安装编译依赖 + 测试工具
+      # -------------------------------------------------------
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            g++ \
+            flex \
+            bison \
+            libreadline-dev \
+            lcov \
+            gcovr
+
+      # -------------------------------------------------------
+      # 步骤 3：CMake 配置（启用覆盖率）
+      # -------------------------------------------------------
+      - name: Configure with coverage
+        run: |
+          mkdir -p build
+          cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Debug -DENABLE_COVERAGE=ON
+
+      # -------------------------------------------------------
+      # 步骤 4：编译所有目标（并行）
+      # -------------------------------------------------------
+      - name: Build all targets
+        run: |
+          cd build
+          make -j$(nproc) 2>&1
+
+      # -------------------------------------------------------
+      # 步骤 5：用 CTest 运行全部模块测试
+      # -------------------------------------------------------
+      - name: Run module tests (CTest)
+        run: |
+          cd build
+          ctest --output-on-failure --timeout 60 2>&1
+
+      # -------------------------------------------------------
+      # 步骤 6：CI 检查 — 模块完备性 + 覆盖率阈值
+      # -------------------------------------------------------
+      - name: CI check (module coverage + completeness)
+        run: |
+          bash scripts/ci_check.sh 2>&1
+
+      # -------------------------------------------------------
+      # 步骤 7：上传覆盖率 HTML 报告
+      # -------------------------------------------------------
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v3
+        if: always()  # 即使 CI 检查失败也上传
+        with:
+          name: coverage-report
+          path: build/coverage_report/html/
+          retention-days: 14
+
+      # -------------------------------------------------------
+      # 步骤 8：上传 .gcda/.gcno 文件（调试用）
+      # -------------------------------------------------------
+      - name: Upload coverage raw data
+        uses: actions/upload-artifact@v3
+        if: failure()
+        with:
+          name: coverage-raw
+          path: |
+            build/**/*.gcda
+            build/**/*.gcno
+          retention-days: 7

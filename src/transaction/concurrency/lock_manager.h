@@ -10,8 +10,10 @@ See the Mulan PSL v2 for more details. */
 
 #pragma once
 
+#include <list>
 #include <mutex>
 #include <condition_variable>
+#include <unordered_map>
 #include "transaction/transaction.h"
 
 static const std::string GroupLockModeStr[10] = {"NON_LOCK", "IS", "IX", "S", "X", "SIX"};

@@ -15,6 +15,7 @@ See the Mulan PSL v2 for more details. */
 #include <iomanip>
 #include <string>
 #include <sstream>
+#include <vector>
 #include "common/context.h"
 #include "common/config.h"
 

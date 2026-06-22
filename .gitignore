@@ -1,0 +1,36 @@
+# === Build ===
+build/
+cmake-build-*/
+CMakeUserPresets.json
+compile_commands.json
+
+# === IDE & Editor ===
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.orig
+
+# === Compiled Objects & Libraries ===
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dll
+*.dylib
+*.exe
+*.out
+*.app
+
+# === CTest / Testing ===
+Testing/
+
+# === OS ===
+.DS_Store
+Thumbs.db
+
+# === Misc ===
+*.log
+*.cache
