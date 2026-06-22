@@ -19,7 +19,7 @@ endif()
 target_link_libraries(parser execution pthread)
 
 add_executable(rmdb rmdb.cpp)
-target_link_libraries(rmdb parser execution readline pthread planner analyze)
+target_link_libraries(rmdb parser execution pthread planner analyze)
 
 # unit_test
 add_executable(unit_test unit_test.cpp)

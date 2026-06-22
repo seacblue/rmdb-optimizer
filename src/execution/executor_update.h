@@ -72,6 +72,11 @@ class UpdateExecutor : public AbstractExecutor {
                 Value rhs_value = clause.rhs_expr != nullptr
                     ? eval_set_expr(clause.rhs_expr, rec->data, tab_.cols, col_offset)
                     : clause.rhs;
+                if (it->type == TYPE_FLOAT && rhs_value.type == TYPE_INT) {
+                    rhs_value.set_float(static_cast<float>(rhs_value.int_val));
+                } else if (it->type == TYPE_INT && rhs_value.type == TYPE_FLOAT) {
+                    rhs_value.set_int(static_cast<int>(rhs_value.float_val));
+                }
                 rhs_value.init_raw(it->len);
                 memcpy(rec->data + it->offset, rhs_value.raw->data, it->len);
             }
