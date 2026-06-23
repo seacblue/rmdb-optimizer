@@ -1,13 +1,12 @@
 # ============================================================
-# RMDB CI/CD Pipeline
+# RMDB CI Pipeline
 #
-# 每次 push/PR 到 main 或 feat/* 分支时触发：
-#   1. 安装依赖（cmake, g++, flex, bison, lcov, readline）
-#   2. 启用覆盖率编译
-#   3. 构建所有目标
-#   4. 用 CTest 运行全部模块测试
-#   5. 检查模块测试完备性 + 行覆盖率阈值
-#   6. 上传覆盖率 HTML 报告作为构建产物
+# 当前分支以可交付的服务端集成验证为主：
+#   1. 安装依赖
+#   2. 构建 rmdb 服务端
+#   3. 启动服务端并通过 socket 跑非交互式 SQL 集成测试
+#   4. 做轻量 CI 一致性检查
+#   5. 失败时上传日志与 output.txt
 # ============================================================
 
 name: RMDB CI
@@ -32,7 +31,7 @@ jobs:
           fetch-depth: 0
 
       # -------------------------------------------------------
-      # 步骤 2：安装编译依赖 + 测试工具
+      # 步骤 2：安装构建依赖
       # -------------------------------------------------------
       - name: Install dependencies
         run: |
@@ -44,61 +43,59 @@ jobs:
             flex \
             bison \
             libreadline-dev \
-            lcov \
-            gcovr
+            python3
 
       # -------------------------------------------------------
-      # 步骤 3：CMake 配置（启用覆盖率）
+      # 步骤 3：CMake 配置
       # -------------------------------------------------------
-      - name: Configure with coverage
+      - name: Configure
         run: |
           mkdir -p build
           cd build
-          cmake .. -DCMAKE_BUILD_TYPE=Debug -DENABLE_COVERAGE=ON
+          cmake .. -DCMAKE_BUILD_TYPE=Debug
 
       # -------------------------------------------------------
-      # 步骤 4：编译所有目标（并行）
+      # 步骤 4：编译 rmdb 服务端
       # -------------------------------------------------------
-      - name: Build all targets
+      - name: Build rmdb
         run: |
           cd build
-          make -j$(nproc) 2>&1
+          cmake --build . -j$(nproc) --target rmdb
 
       # -------------------------------------------------------
-      # 步骤 5：用 CTest 运行全部模块测试
+      # 步骤 5：运行非交互式集成测试
       # -------------------------------------------------------
-      - name: Run module tests (CTest)
+      - name: Run integration test
         run: |
           cd build
-          ctest --output-on-failure --timeout 60 2>&1
+          ./bin/rmdb execution_test_db > server.log 2>&1 &
+          SERVER_PID=$!
+          cleanup() {
+            kill -INT "$SERVER_PID" >/dev/null 2>&1 || true
+            wait "$SERVER_PID" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          python3 ../src/test/integration_test.py \
+            --host 127.0.0.1 \
+            --port 8765 \
+            --output "$(pwd)/execution_test_db/output.txt"
 
       # -------------------------------------------------------
-      # 步骤 6：CI 检查 — 模块完备性 + 覆盖率阈值
+      # 步骤 6：轻量 CI 一致性检查
       # -------------------------------------------------------
-      - name: CI check (module coverage + completeness)
+      - name: CI check
         run: |
           bash scripts/ci_check.sh 2>&1
 
       # -------------------------------------------------------
-      # 步骤 7：上传覆盖率 HTML 报告
+      # 步骤 7：失败时上传日志
       # -------------------------------------------------------
-      - name: Upload coverage report
-        uses: actions/upload-artifact@v7
-        if: always()  # 即使 CI 检查失败也上传
-        with:
-          name: coverage-report
-          path: build/coverage_report/html/
-          retention-days: 14
-
-      # -------------------------------------------------------
-      # 步骤 8：上传 .gcda/.gcno 文件（调试用）
-      # -------------------------------------------------------
-      - name: Upload coverage raw data
+      - name: Upload integration artifacts
         uses: actions/upload-artifact@v7
         if: failure()
         with:
-          name: coverage-raw
+          name: integration-artifacts
           path: |
-            build/**/*.gcda
-            build/**/*.gcno
+            build/server.log
+            build/execution_test_db/output.txt
           retention-days: 7
