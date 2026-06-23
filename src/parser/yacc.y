@@ -28,8 +28,7 @@ WHERE UPDATE SET SELECT INT CHAR FLOAT BIGINT DATETIME INDEX AND JOIN EXIT HELP 
 %token LEQ NEQ GEQ T_EOF
 
 // type-specific tokens
-%token <sv_str> IDENTIFIER VALUE_STRING FILE_PATH
-%token <sv_int> VALUE_INT
+%token <sv_str> IDENTIFIER VALUE_STRING FILE_PATH VALUE_INT
 %token <sv_float> VALUE_FLOAT
 
 // specify types for non-terminal symbol
@@ -110,6 +109,10 @@ dbStmt:
         SHOW TABLES
     {
         $$ = std::make_shared<ShowTables>();
+    }
+    |   SHOW INDEX FROM tbName
+    {
+        $$ = std::make_shared<ShowIndex>($4);
     }
     ;
 
@@ -195,7 +198,7 @@ type:
     }
     |   CHAR '(' VALUE_INT ')'
     {
-        $$ = std::make_shared<TypeLen>(SV_TYPE_STRING, $3);
+        $$ = std::make_shared<TypeLen>(SV_TYPE_STRING, std::stoi($3));
     }
     |   FLOAT
     {
@@ -237,12 +240,7 @@ value:
     }
     |   '-' VALUE_INT
     {
-        if ($2 == INT64_MIN) {
-            // -INT64_MIN would overflow; the value IS INT64_MIN
-            $$ = std::make_shared<IntLit>(INT64_MIN);
-        } else {
-            $$ = std::make_shared<IntLit>(-$2);
-        }
+        $$ = std::make_shared<IntLit>("-" + $2);
     }
     |   '-' VALUE_FLOAT
     {

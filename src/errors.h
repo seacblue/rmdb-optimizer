@@ -167,3 +167,21 @@ class InvalidDatetimeError : public RMDBError {
     InvalidDatetimeError(const std::string &val)
         : RMDBError("Invalid datetime value: " + val) {}
 };
+
+class InvalidIntegerLiteralError : public RMDBError {
+   public:
+    InvalidIntegerLiteralError(const std::string &val)
+        : RMDBError("Invalid integer literal: " + val) {}
+};
+
+class NumericOverflowError : public RMDBError {
+   public:
+    NumericOverflowError(const std::string &target, const std::string &val)
+        : RMDBError("Numeric overflow converting " + val + " to " + target) {}
+};
+
+class UniqueConstraintError : public RMDBError {
+   public:
+    explicit UniqueConstraintError(const std::string &name)
+        : RMDBError("Unique constraint violated: " + name) {}
+};

@@ -288,6 +288,18 @@ TEST_F(DateTimeTest, InsertInvalidDateTime) {
     // 月份 0
     expect_error(sql_helper_.execute_sql(
         "INSERT INTO test_datetime VALUES ('2023-00-01 00:00:00', 9.0);"));
+
+    // 缺失前导零
+    expect_error(sql_helper_.execute_sql(
+        "INSERT INTO test_datetime VALUES ('1999-1-07 12:30:00', 10.0);"));
+
+    // 日期 0
+    expect_error(sql_helper_.execute_sql(
+        "INSERT INTO test_datetime VALUES ('1999-07-00 12:30:00', 11.0);"));
+
+    // 小时 24
+    expect_error(sql_helper_.execute_sql(
+        "INSERT INTO test_datetime VALUES ('1999-07-07 24:00:00', 12.0);"));
 }
 
 // ============================================================
@@ -392,7 +404,34 @@ TEST_F(DateTimeTest, DateTimeWhereEq) {
 }
 
 // ============================================================
-// 用例 7: 空表扫描（DATETIME 列）
+// 用例 7: DATETIME 增删改查完整路径
+// ============================================================
+TEST_F(DateTimeTest, DateTimeUpdateAndDelete) {
+    expect_success(sql_helper_.execute_sql(
+        "CREATE TABLE test_datetime (id INT, dt DATETIME);"));
+
+    expect_success(sql_helper_.execute_sql(
+        "INSERT INTO test_datetime VALUES (1, '2023-05-18 09:12:19');"));
+    expect_success(sql_helper_.execute_sql(
+        "INSERT INTO test_datetime VALUES (2, '2023-05-30 12:34:32');"));
+
+    expect_success(sql_helper_.execute_sql(
+        "UPDATE test_datetime SET id = 2023 WHERE dt = '2023-05-18 09:12:19';"));
+    std::string res = sql_helper_.execute_sql(
+        "SELECT * FROM test_datetime WHERE dt = '2023-05-18 09:12:19';");
+    expect_output_contains(res, "2023");
+    expect_total_records(res, 1);
+
+    expect_success(sql_helper_.execute_sql(
+        "DELETE FROM test_datetime WHERE dt = '2023-05-30 12:34:32';"));
+    res = sql_helper_.execute_sql("SELECT * FROM test_datetime;");
+    expect_total_records(res, 1);
+    expect_output_contains(res, "2023-05-18");
+    expect_output_not_contains(res, "2023-05-30");
+}
+
+// ============================================================
+// 用例 8: 空表扫描（DATETIME 列）
 // ============================================================
 TEST_F(DateTimeTest, EmptyTableWithDateTime) {
     expect_success(sql_helper_.execute_sql(

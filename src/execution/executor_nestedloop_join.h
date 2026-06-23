@@ -9,8 +9,7 @@ MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 See the Mulan PSL v2 for more details. */
 
 #pragma once
-#include <cmath>
-#include <climits>
+#include "common/type_cast.h"
 #include "execution_defs.h"
 #include "execution_manager.h"
 #include "executor_abstract.h"
@@ -124,48 +123,18 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
             int len = lhs_it->len;
             const char *lhs_val = rec_data + lhs_it->offset;
 
-            std::unique_ptr<char[]> rhs_buf;
-            const char *rhs_val = nullptr;
-            ColType rhs_type = lhs_type;
+            int cmp = 0;
             if (cond.is_rhs_val) {
-                rhs_type = cond.rhs_val.type;
-                rhs_buf = std::make_unique<char[]>(len);
-                memset(rhs_buf.get(), 0, len);
-                if (cond.rhs_val.type == TYPE_INT) {
-                    if (lhs_type == TYPE_BIGINT) {
-                        *(int64_t *)rhs_buf.get() = static_cast<int64_t>(cond.rhs_val.int_val);
-                    } else {
-                        *(int *)rhs_buf.get() = cond.rhs_val.int_val;
-                    }
-                } else if (cond.rhs_val.type == TYPE_BIGINT) {
-                    if (lhs_type == TYPE_INT) {
-                        int64_t v = cond.rhs_val.bigint_val;
-                        if (v > INT_MAX || v < INT_MIN) {
-                            return false;
-                        }
-                        *(int *)rhs_buf.get() = static_cast<int>(v);
-                    } else {
-                        *(int64_t *)rhs_buf.get() = cond.rhs_val.bigint_val;
-                    }
-                } else if (cond.rhs_val.type == TYPE_FLOAT) {
-                    *(float *)rhs_buf.get() = cond.rhs_val.float_val;
-                } else if (cond.rhs_val.type == TYPE_DATETIME) {
-                    *(int64_t *)rhs_buf.get() = cond.rhs_val.bigint_val;
-                } else {
-                    memcpy(rhs_buf.get(), cond.rhs_val.str_val.c_str(),
-                           std::min((int)cond.rhs_val.str_val.size(), len));
-                }
-                rhs_val = rhs_buf.get();
+                cmp = TypeCaster::compare_raw_with_value(lhs_val, lhs_type, len, cond.rhs_val);
             } else {
                 auto rhs_it = std::find_if(cols.begin(), cols.end(), [&](const ColMeta &c) {
                     return c.tab_name == cond.rhs_col.tab_name && c.name == cond.rhs_col.col_name;
                 });
                 if (rhs_it == cols.end()) return false;
-                rhs_type = rhs_it->type;
-                rhs_val = rec_data + rhs_it->offset;
+                cmp = TypeCaster::compare_raw(lhs_val, lhs_type, len,
+                                              rec_data + rhs_it->offset, rhs_it->type, rhs_it->len);
             }
 
-            int cmp = compare_value(lhs_val, rhs_val, lhs_type, rhs_type, len, cond.is_rhs_val ? &cond.rhs_val : nullptr);
             bool ok = false;
             switch (cond.op) {
                 case OP_EQ: ok = (cmp == 0); break;
@@ -178,38 +147,5 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
             if (!ok) return false;
         }
         return true;
-    }
-
-    static int compare_value(const char *a, const char *b, ColType lhs_type, ColType rhs_type, int len, const Value *rhs_literal) {
-        if ((lhs_type == TYPE_INT || lhs_type == TYPE_FLOAT) &&
-            (rhs_type == TYPE_INT || rhs_type == TYPE_FLOAT) &&
-            lhs_type != rhs_type) {
-            double lhs_num = lhs_type == TYPE_FLOAT ? static_cast<double>(*reinterpret_cast<const float *>(a))
-                                                    : static_cast<double>(*reinterpret_cast<const int *>(a));
-            double rhs_num = 0.0;
-            if (rhs_literal != nullptr) {
-                rhs_num = rhs_type == TYPE_FLOAT ? static_cast<double>(rhs_literal->float_val)
-                                                 : static_cast<double>(rhs_literal->int_val);
-            } else {
-                rhs_num = rhs_type == TYPE_FLOAT ? static_cast<double>(*reinterpret_cast<const float *>(b))
-                                                 : static_cast<double>(*reinterpret_cast<const int *>(b));
-            }
-            if (fabs(lhs_num - rhs_num) < 1e-9) return 0;
-            return lhs_num < rhs_num ? -1 : 1;
-        }
-        if (lhs_type == TYPE_INT) {
-            int ia = *(const int *)a, ib = *(const int *)b;
-            return (ia < ib) ? -1 : (ia > ib) ? 1 : 0;
-        }
-        if (lhs_type == TYPE_FLOAT) {
-            float fa = *(const float *)a, fb = *(const float *)b;
-            if (fabs(fa - fb) < 1e-9) return 0;
-            return (fa < fb) ? -1 : 1;
-        }
-        if (lhs_type == TYPE_BIGINT || lhs_type == TYPE_DATETIME) {
-            int64_t ia = *(const int64_t *)a, ib = *(const int64_t *)b;
-            return (ia < ib) ? -1 : (ia > ib) ? 1 : 0;
-        }
-        return strncmp(a, b, len);
     }
 };

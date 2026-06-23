@@ -11,6 +11,7 @@ See the Mulan PSL v2 for more details. */
 #include "analyze.h"
 
 #include <climits>
+#include "common/type_cast.h"
 
 /**
  * @description: 分析器，进行语义分析和查询重写，需要检查不符合语义规定的部分
@@ -70,15 +71,16 @@ std::shared_ptr<Query> Analyze::do_analyze(std::shared_ptr<ast::TreeNode> parse)
             ColType rhs_type = resolve_expr_type(clause.rhs_expr, all_cols);
 
             auto lhs_meta_it = sm_manager_->db_.get_table(clause.lhs.tab_name).get_col(clause.lhs.col_name);
-            bool numeric_compatible =
-                (lhs_meta_it->type == TYPE_INT || lhs_meta_it->type == TYPE_FLOAT) &&
-                (rhs_type == TYPE_INT || rhs_type == TYPE_FLOAT);
-            if (lhs_meta_it->type != rhs_type && !numeric_compatible) {
+            bool numeric_compatible = TypeCaster::is_numeric(lhs_meta_it->type) && TypeCaster::is_numeric(rhs_type);
+            bool datetime_compatible = lhs_meta_it->type == TYPE_DATETIME &&
+                                       (rhs_type == TYPE_DATETIME || rhs_type == TYPE_STRING);
+            if (lhs_meta_it->type != rhs_type && !numeric_compatible && !datetime_compatible) {
                 throw IncompatibleTypeError(coltype2str(lhs_meta_it->type), coltype2str(rhs_type));
             }
 
             if (auto rhs_val = std::dynamic_pointer_cast<ast::Value>(sv_clause->rhs)) {
-                clause.rhs = convert_sv_value(rhs_val);
+                clause.rhs = TypeCaster::cast_value(convert_sv_value(rhs_val), lhs_meta_it->type, lhs_meta_it->len);
+                clause.rhs_expr = nullptr;
             }
             query->set_clauses.push_back(std::move(clause));
         }
@@ -158,6 +160,9 @@ void Analyze::get_clause(const std::vector<std::shared_ptr<ast::BinaryExpr>> &sv
         } else if (auto rhs_col = std::dynamic_pointer_cast<ast::Col>(expr->rhs)) {
             cond.is_rhs_val = false;
             cond.rhs_col = {.tab_name = rhs_col->tab_name, .col_name = rhs_col->col_name};
+        } else {
+            cond.is_rhs_val = true;
+            cond.rhs_val = eval_constant_expr(expr->rhs);
         }
         conds.push_back(cond);
     }
@@ -186,20 +191,13 @@ void Analyze::check_clause(const std::vector<std::string> &tab_names, std::vecto
             rhs_type = rhs_col->type;
         }
         if (lhs_type != rhs_type) {
-            // Allow INT ↔ BIGINT comparison (implicit type conversion)
-            bool both_int_types = (lhs_type == TYPE_INT || lhs_type == TYPE_BIGINT) &&
-                                  (rhs_type == TYPE_INT || rhs_type == TYPE_BIGINT);
-            // Allow STRING → DATETIME comparison (datetime value from string literal)
-            bool string_to_datetime = (lhs_type == TYPE_DATETIME && rhs_type == TYPE_STRING);
-            if (!both_int_types && !string_to_datetime) {
+            bool numeric_compatible = TypeCaster::is_numeric(lhs_type) && TypeCaster::is_numeric(rhs_type);
+            bool string_to_datetime = lhs_type == TYPE_DATETIME && rhs_type == TYPE_STRING;
+            if (!numeric_compatible && !string_to_datetime) {
                 throw IncompatibleTypeError(coltype2str(lhs_type), coltype2str(rhs_type));
             }
-            // Convert string value to DATETIME internal encoding
-            if (string_to_datetime) {
-                if (!validate_datetime_str(cond.rhs_val.str_val)) {
-                    throw InvalidDatetimeError(cond.rhs_val.str_val);
-                }
-                cond.rhs_val.set_datetime(datetime_str_to_int64(cond.rhs_val.str_val));
+            if (cond.is_rhs_val && string_to_datetime) {
+                cond.rhs_val = TypeCaster::cast_value(cond.rhs_val, lhs_type, lhs_col->len);
             }
         }
         if (cond.is_rhs_val && lhs_type == rhs_type) {
@@ -212,20 +210,41 @@ void Analyze::check_clause(const std::vector<std::string> &tab_names, std::vecto
 Value Analyze::convert_sv_value(const std::shared_ptr<ast::Value> &sv_val) {
     Value val;
     if (auto int_lit = std::dynamic_pointer_cast<ast::IntLit>(sv_val)) {
-        // Check if the value fits in int32 range; if not, treat as BIGINT
-        if (int_lit->val >= INT_MIN && int_lit->val <= INT_MAX) {
-            val.set_int(static_cast<int>(int_lit->val));
-        } else {
-            val.set_bigint(int_lit->val);
-        }
+        val = TypeCaster::parse_integer_literal(int_lit->val);
     } else if (auto float_lit = std::dynamic_pointer_cast<ast::FloatLit>(sv_val)) {
-        val.set_float(float_lit->val);
+        val = Value::make_float(float_lit->val);
     } else if (auto str_lit = std::dynamic_pointer_cast<ast::StringLit>(sv_val)) {
-        val.set_str(str_lit->val);
+        val = Value::make_string(str_lit->val);
     } else {
         throw InternalError("Unexpected sv value type");
     }
     return val;
+}
+
+Value Analyze::eval_constant_expr(const std::shared_ptr<ast::Expr> &expr) {
+    if (auto rhs_val = std::dynamic_pointer_cast<ast::Value>(expr)) {
+        return convert_sv_value(rhs_val);
+    }
+    if (auto unary = std::dynamic_pointer_cast<ast::UnaryExpr>(expr)) {
+        return TypeCaster::negate_value(eval_constant_expr(unary->rhs));
+    }
+    if (auto arith = std::dynamic_pointer_cast<ast::ArithExpr>(expr)) {
+        Value lhs = eval_constant_expr(arith->lhs);
+        Value rhs = eval_constant_expr(arith->rhs);
+        switch (arith->op) {
+            case ast::SV_OP_ADD:
+                return TypeCaster::apply_arithmetic(lhs, rhs, '+');
+            case ast::SV_OP_SUB:
+                return TypeCaster::apply_arithmetic(lhs, rhs, '-');
+            case ast::SV_OP_MUL:
+                return TypeCaster::apply_arithmetic(lhs, rhs, '*');
+            case ast::SV_OP_DIV:
+                return TypeCaster::apply_arithmetic(lhs, rhs, '/');
+            default:
+                throw InternalError("Unexpected arithmetic operator in condition");
+        }
+    }
+    throw ColumnNotFoundError("");
 }
 
 CompOp Analyze::convert_sv_comp_op(ast::SvCompOp op) {
@@ -237,8 +256,8 @@ CompOp Analyze::convert_sv_comp_op(ast::SvCompOp op) {
 }
 
 ColType Analyze::resolve_expr_type(const std::shared_ptr<ast::Expr> &expr, const std::vector<ColMeta> &all_cols) {
-    if (std::dynamic_pointer_cast<ast::IntLit>(expr)) {
-        return TYPE_INT;
+    if (auto int_lit = std::dynamic_pointer_cast<ast::IntLit>(expr)) {
+        return TypeCaster::parse_integer_literal(int_lit->val).type;
     }
     if (std::dynamic_pointer_cast<ast::FloatLit>(expr)) {
         return TYPE_FLOAT;
@@ -259,7 +278,7 @@ ColType Analyze::resolve_expr_type(const std::shared_ptr<ast::Expr> &expr, const
     }
     if (auto unary = std::dynamic_pointer_cast<ast::UnaryExpr>(expr)) {
         ColType rhs_type = resolve_expr_type(unary->rhs, all_cols);
-        if (rhs_type == TYPE_STRING) {
+        if (!TypeCaster::is_numeric(rhs_type)) {
             throw IncompatibleTypeError(coltype2str(rhs_type), "NUMERIC");
         }
         return rhs_type;
@@ -267,13 +286,10 @@ ColType Analyze::resolve_expr_type(const std::shared_ptr<ast::Expr> &expr, const
     if (auto arith = std::dynamic_pointer_cast<ast::ArithExpr>(expr)) {
         ColType lhs_type = resolve_expr_type(arith->lhs, all_cols);
         ColType rhs_type = resolve_expr_type(arith->rhs, all_cols);
-        if (lhs_type == TYPE_STRING || rhs_type == TYPE_STRING) {
+        if (!TypeCaster::is_numeric(lhs_type) || !TypeCaster::is_numeric(rhs_type)) {
             throw IncompatibleTypeError(coltype2str(lhs_type), coltype2str(rhs_type));
         }
-        if (lhs_type == TYPE_FLOAT || rhs_type == TYPE_FLOAT) {
-            return TYPE_FLOAT;
-        }
-        return TYPE_INT;
+        return TypeCaster::common_numeric_type(lhs_type, rhs_type);
     }
     throw InternalError("Unexpected set expression type");
 }

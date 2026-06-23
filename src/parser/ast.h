@@ -47,6 +47,12 @@ struct Help : public TreeNode {
 struct ShowTables : public TreeNode {
 };
 
+struct ShowIndex : public TreeNode {
+    std::string tab_name;
+
+    ShowIndex(std::string tab_name_) : tab_name(std::move(tab_name_)) {}
+};
+
 struct TxnBegin : public TreeNode {
 };
 
@@ -128,9 +134,9 @@ struct Value : public Expr {
 };
 
 struct IntLit : public Value {
-    int64_t val;
+    std::string val;
 
-    IntLit(int64_t val_) : val(val_) {}
+    IntLit(std::string val_) : val(std::move(val_)) {}
 };
 
 struct FloatLit : public Value {

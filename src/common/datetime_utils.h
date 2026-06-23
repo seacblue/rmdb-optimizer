@@ -18,6 +18,7 @@ See the Mulan PSL v2 for more details. */
 
 #pragma once
 
+#include <cctype>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>

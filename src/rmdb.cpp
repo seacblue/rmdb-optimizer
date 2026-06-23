@@ -15,6 +15,8 @@ See the Mulan PSL v2 for more details. */
 #include <atomic>
 #include <algorithm>
 #include <cctype>
+#include <string>
+#include <vector>
 
 #include "errors.h"
 #include "optimizer/optimizer.h"
@@ -171,15 +173,95 @@ bool process_sql_command(const std::string &command, txn_id_t *txn_id, char *dat
     return true;
 }
 
+// 从累积缓冲中切出所有"完整语句"。
+// 语句边界只有 ';'（SQL 终止符）。'\0' 仅是网络消息边界，不是语句边界——
+// 把它当作普通空白处理，从而让跨行 / 跨包的语句片段能正确拼接。
+// 未以 ';' 结束的尾部残片保留在 pending 中，等待后续 read 补齐。
+std::vector<std::string> extract_statements(std::string &pending) {
+    // 先把所有 '\0' 归一成空格，避免它把一条语句切断
+    for (auto &ch : pending) {
+        if (ch == '\0') ch = ' ';
+    }
+    std::vector<std::string> stmts;
+    size_t start = 0;
+    size_t consumed = 0;
+    for (size_t i = 0; i < pending.size(); ++i) {
+        if (pending[i] == ';') {
+            // 含分号一并交给 parser（文法为 stmt ';'）
+            stmts.push_back(pending.substr(start, i - start + 1));
+            start = i + 1;
+            consumed = start;
+        }
+    }
+    pending.erase(0, consumed);
+    return stmts;
+}
+
+// 不带分号的特殊命令（exit / set output_file / crash）：只有当缓冲中没有分号、
+// 且 trim 后精确匹配时才识别。返回 true 表示已作为特殊命令处理（并清空 pending）。
+bool try_special_command(std::string &pending, bool *should_close) {
+    if (pending.find(';') != std::string::npos) return false;
+    std::string cmd = trim_copy(pending.c_str());
+    if (cmd == "exit") {
+        *should_close = true;
+        pending.clear();
+        return true;
+    }
+    if (cmd == "crash") {
+        std::cout << "Server crash" << std::endl;
+        exit(1);
+    }
+    if (cmd == "set output_file off") {
+        g_output_file_on.store(false);
+        pending.clear();
+        return true;
+    }
+    if (cmd == "set output_file on") {
+        g_output_file_on.store(true);
+        pending.clear();
+        return true;
+    }
+    return false;
+}
+
+// 处理缓冲中已就绪的全部语句，把各自的回包内容追加到 reply_accum。
+void process_ready_statements(std::string &pending, txn_id_t *txn_id, std::string &reply_accum,
+                              bool *should_close) {
+    *should_close = false;
+    // 归一 '\0' 后再检测不带分号的特殊命令
+    for (auto &ch : pending) {
+        if (ch == '\0') ch = ' ';
+    }
+    if (try_special_command(pending, should_close)) {
+        return;
+    }
+    std::vector<std::string> stmts = extract_statements(pending);
+    std::vector<char> tmp(BUFFER_LENGTH);
+    for (auto &stmt : stmts) {
+        int off = 0;
+        bool close_now = false;
+        process_sql_command(stmt, txn_id, tmp.data(), &off, &close_now);
+        if (off > 0) {
+            reply_accum.append(tmp.data(), static_cast<size_t>(off));
+        }
+        if (close_now) {
+            *should_close = true;
+            return;
+        }
+    }
+}
+
 void run_stdin_mode() {
     std::cout << "Socket unavailable, falling back to stdin mode." << std::endl;
     txn_id_t txn_id = INVALID_TXN_ID;
-    std::string command;
-    while (!should_exit && std::getline(std::cin, command)) {
-        char data_send[BUFFER_LENGTH] = {};
-        int offset = 0;
+    std::string pending;
+    std::string line;
+    while (!should_exit && std::getline(std::cin, line)) {
+        pending.append(line);
+        pending.push_back('\n');
+        std::string reply;
         bool should_close = false;
-        process_sql_command(command, &txn_id, data_send, &offset, &should_close);
+        process_ready_statements(pending, &txn_id, reply, &should_close);
         if (should_close) {
             break;
         }
@@ -193,10 +275,8 @@ void *client_handler(void *sock_fd) {
     int i_recvBytes;
     // 接收客户端发送的请求
     char data_recv[BUFFER_LENGTH];
-    // 需要返回给客户端的结果
-    char *data_send = new char[BUFFER_LENGTH];
-    // 需要返回给客户端的结果的长度
-    int offset = 0;
+    // 跨多次 read 累积的字节流（兼容一包多条 / 整脚本一次灌入 / 语句被拆到多个包）
+    std::string pending;
     // 记录客户端当前正在执行的事务ID
     txn_id_t txn_id = INVALID_TXN_ID;
 
@@ -217,22 +297,27 @@ void *client_handler(void *sock_fd) {
             std::cout << "Client read error!" << std::endl;
             break;
         }
-        
+
         printf("i_recvBytes: %d \n ", i_recvBytes);
 
-        std::cout << "Read from client " << fd << ": " << data_recv << std::endl;
+        // 按收到的实际字节数追加（包含可能的 '\0' 消息边界，用于切分语句）
+        pending.append(data_recv, static_cast<size_t>(i_recvBytes));
 
-        memset(data_send, '\0', BUFFER_LENGTH);
-        offset = 0;
+        std::string reply;
         bool should_close = false;
-        process_sql_command(data_recv, &txn_id, data_send, &offset, &should_close);
-        if (should_close) {
-            std::cout << "Client exit." << std::endl;
+        process_ready_statements(pending, &txn_id, reply, &should_close);
+
+        // 回包：把本轮所有语句的输出拼在一起返回（保持原客户端一发一收的行为）
+        if (reply.empty()) {
+            reply.push_back('\0');
+        } else if (reply.back() != '\0') {
+            reply.push_back('\0');
+        }
+        if (write(fd, reply.data(), reply.size()) == -1) {
             break;
         }
-        // future TODO: 格式化 sql_handler.result, 传给客户端
-        // send result with fixed format, use protobuf in the future
-        if (write(fd, data_send, offset + 1) == -1) {
+        if (should_close) {
+            std::cout << "Client exit." << std::endl;
             break;
         }
     }

@@ -10,8 +10,7 @@ See the Mulan PSL v2 for more details. */
 
 #pragma once
 
-#include <cmath>
-#include <climits>
+#include "common/type_cast.h"
 #include "execution_defs.h"
 #include "execution_manager.h"
 #include "executor_abstract.h"
@@ -33,6 +32,8 @@ class IndexScanExecutor : public AbstractExecutor {
 
     Rid rid_;
     std::unique_ptr<RecScan> scan_;
+    IxIndexHandle *ih_ = nullptr;
+    bool force_empty_ = false;
 
     SmManager *sm_manager_;
 
@@ -48,6 +49,11 @@ class IndexScanExecutor : public AbstractExecutor {
         index_col_names_ = index_col_names;
         if (!index_col_names_.empty()) {
             index_meta_ = *(tab_.get_index_meta(index_col_names_));
+            auto ih_name = sm_manager_->get_ix_manager()->get_index_name(tab_name_, index_meta_.cols);
+            auto ih_it = sm_manager_->ihs_.find(ih_name);
+            if (ih_it != sm_manager_->ihs_.end()) {
+                ih_ = ih_it->second.get();
+            }
         }
         fh_ = sm_manager_->fhs_.at(tab_name_).get();
         cols_ = tab_.cols;
@@ -69,11 +75,17 @@ class IndexScanExecutor : public AbstractExecutor {
     }
 
     void beginTuple() override {
-        // 当前 IxIndexHandle (B+ 树) 尚未完全实现，
-        // 因此退化使用 RmScan 进行全表扫描 + 条件过滤。
-        // 待 B+ 树的 insert_entry / leaf_lookup / IxScan 实现后，
-        // 可将下方替换为 IIxScan 的范围扫描以利用索引加速。
-        scan_ = std::make_unique<RmScan>(fh_);
+        if (ih_ == nullptr || index_col_names_.empty()) {
+            scan_ = std::make_unique<RmScan>(fh_);
+        } else {
+            Iid lower = ih_->leaf_begin();
+            Iid upper = ih_->leaf_end();
+            if (!build_index_range(lower, upper) || force_empty_) {
+                scan_ = std::make_unique<IxScan>(ih_, upper, upper, sm_manager_->get_bpm());
+            } else {
+                scan_ = std::make_unique<IxScan>(ih_, lower, upper, sm_manager_->get_bpm());
+            }
+        }
         advance_to_match();
     }
 
@@ -98,6 +110,224 @@ class IndexScanExecutor : public AbstractExecutor {
     const std::vector<ColMeta> &cols() const override { return cols_; }
 
    private:
+    struct BoundSpec {
+        bool has_eq = false;
+        Value eq;
+        bool has_lower = false;
+        Value lower;
+        bool lower_inclusive = true;
+        bool has_upper = false;
+        Value upper;
+        bool upper_inclusive = true;
+    };
+
+    static std::string raw_key_string(const char *data, int len) {
+        return std::string(data, data + len);
+    }
+
+    static Value min_value_for_col(const ColMeta &col) {
+        Value v;
+        switch (col.type) {
+            case TYPE_INT:
+                v = Value::make_int(std::numeric_limits<int>::min());
+                break;
+            case TYPE_BIGINT:
+                v = Value::make_bigint(std::numeric_limits<int64_t>::min());
+                break;
+            case TYPE_FLOAT:
+                v = Value::make_float(std::numeric_limits<float>::lowest());
+                break;
+            case TYPE_STRING:
+                v = Value::make_string(std::string());
+                break;
+            case TYPE_DATETIME:
+                v = Value::make_datetime(datetime_str_to_int64("1000-01-01 00:00:00"));
+                break;
+            default:
+                throw InternalError("Unexpected index column type");
+        }
+        return v;
+    }
+
+    static Value max_value_for_col(const ColMeta &col) {
+        Value v;
+        switch (col.type) {
+            case TYPE_INT:
+                v = Value::make_int(std::numeric_limits<int>::max());
+                break;
+            case TYPE_BIGINT:
+                v = Value::make_bigint(std::numeric_limits<int64_t>::max());
+                break;
+            case TYPE_FLOAT:
+                v = Value::make_float(std::numeric_limits<float>::max());
+                break;
+            case TYPE_STRING:
+                v = Value::make_string(std::string(col.len, static_cast<char>(0xFF)));
+                break;
+            case TYPE_DATETIME:
+                v = Value::make_datetime(datetime_str_to_int64("9999-12-31 23:59:59"));
+                break;
+            default:
+                throw InternalError("Unexpected index column type");
+        }
+        return v;
+    }
+
+    static void encode_value_to_key(char *dst, const ColMeta &col, const Value &value) {
+        Value casted = TypeCaster::cast_value(value, col.type, col.len);
+        casted.init_raw(col.len);
+        memcpy(dst, casted.raw->data, col.len);
+    }
+
+    static bool better_lower(const BoundSpec &spec, const Value &candidate, bool inclusive) {
+        if (!spec.has_lower) {
+            return true;
+        }
+        int cmp = TypeCaster::compare_values(candidate, spec.lower);
+        if (cmp > 0) {
+            return true;
+        }
+        if (cmp == 0 && !inclusive && spec.lower_inclusive) {
+            return true;
+        }
+        return false;
+    }
+
+    static bool better_upper(const BoundSpec &spec, const Value &candidate, bool inclusive) {
+        if (!spec.has_upper) {
+            return true;
+        }
+        int cmp = TypeCaster::compare_values(candidate, spec.upper);
+        if (cmp < 0) {
+            return true;
+        }
+        if (cmp == 0 && !inclusive && spec.upper_inclusive) {
+            return true;
+        }
+        return false;
+    }
+
+    bool build_index_range(Iid &lower, Iid &upper) {
+        force_empty_ = false;
+        if (ih_ == nullptr || index_meta_.cols.empty()) {
+            return false;
+        }
+
+        std::vector<BoundSpec> specs(index_meta_.cols.size());
+        for (size_t i = 0; i < index_meta_.cols.size(); ++i) {
+            const auto &col = index_meta_.cols[i];
+            for (const auto &cond : conds_) {
+                if (!cond.is_rhs_val) {
+                    continue;
+                }
+                if (cond.lhs_col.tab_name != tab_name_ || cond.lhs_col.col_name != col.name) {
+                    continue;
+                }
+                Value rhs = TypeCaster::cast_value(cond.rhs_val, col.type, col.len);
+                if (cond.op == OP_EQ) {
+                    if (specs[i].has_eq && TypeCaster::compare_values(specs[i].eq, rhs) != 0) {
+                        force_empty_ = true;
+                        return true;
+                    }
+                    specs[i].has_eq = true;
+                    specs[i].eq = rhs;
+                    continue;
+                }
+                if (cond.op == OP_GT || cond.op == OP_GE) {
+                    bool inclusive = cond.op == OP_GE;
+                    if (better_lower(specs[i], rhs, inclusive)) {
+                        specs[i].has_lower = true;
+                        specs[i].lower = rhs;
+                        specs[i].lower_inclusive = inclusive;
+                    }
+                } else if (cond.op == OP_LT || cond.op == OP_LE) {
+                    bool inclusive = cond.op == OP_LE;
+                    if (better_upper(specs[i], rhs, inclusive)) {
+                        specs[i].has_upper = true;
+                        specs[i].upper = rhs;
+                        specs[i].upper_inclusive = inclusive;
+                    }
+                }
+            }
+            if (specs[i].has_eq) {
+                if ((specs[i].has_lower && TypeCaster::compare_values(specs[i].eq, specs[i].lower) < 0) ||
+                    (specs[i].has_upper && TypeCaster::compare_values(specs[i].eq, specs[i].upper) > 0)) {
+                    force_empty_ = true;
+                    return true;
+                }
+            } else if (specs[i].has_lower && specs[i].has_upper) {
+                int cmp = TypeCaster::compare_values(specs[i].lower, specs[i].upper);
+                if (cmp > 0 || (cmp == 0 && (!specs[i].lower_inclusive || !specs[i].upper_inclusive))) {
+                    force_empty_ = true;
+                    return true;
+                }
+            }
+        }
+
+        size_t prefix = 0;
+        bool range_used = false;
+        size_t range_idx = 0;
+        for (size_t i = 0; i < specs.size(); ++i) {
+            if (specs[i].has_eq) {
+                ++prefix;
+                continue;
+            }
+            if (specs[i].has_lower || specs[i].has_upper) {
+                ++prefix;
+                range_used = true;
+                range_idx = i;
+            }
+            break;
+        }
+        if (prefix == 0) {
+            return false;
+        }
+
+        std::vector<char> low_key(index_meta_.col_tot_len, 0);
+        std::vector<char> high_key(index_meta_.col_tot_len, 0);
+        int offset = 0;
+        for (size_t i = 0; i < index_meta_.cols.size(); ++i) {
+            const auto &col = index_meta_.cols[i];
+            if (!range_used && i < prefix) {
+                encode_value_to_key(low_key.data() + offset, col, specs[i].eq);
+                encode_value_to_key(high_key.data() + offset, col, specs[i].eq);
+            } else if (range_used && i < range_idx) {
+                encode_value_to_key(low_key.data() + offset, col, specs[i].eq);
+                encode_value_to_key(high_key.data() + offset, col, specs[i].eq);
+            } else if (range_used && i == range_idx) {
+                encode_value_to_key(low_key.data() + offset, col,
+                                    specs[i].has_lower ? specs[i].lower : min_value_for_col(col));
+                encode_value_to_key(high_key.data() + offset, col,
+                                    specs[i].has_upper ? specs[i].upper : max_value_for_col(col));
+            } else {
+                Value low_tail = min_value_for_col(col);
+                Value high_tail = max_value_for_col(col);
+                if (range_used && specs[range_idx].has_lower && !specs[range_idx].lower_inclusive) {
+                    low_tail = max_value_for_col(col);
+                }
+                if (range_used && specs[range_idx].has_upper && !specs[range_idx].upper_inclusive) {
+                    high_tail = min_value_for_col(col);
+                }
+                encode_value_to_key(low_key.data() + offset, col, low_tail);
+                encode_value_to_key(high_key.data() + offset, col, high_tail);
+            }
+            offset += col.len;
+        }
+
+        bool has_lower = !range_used || specs[range_idx].has_lower || prefix > 0;
+        bool has_upper = !range_used || specs[range_idx].has_upper || prefix > 0;
+        bool lower_inclusive = !range_used || !specs[range_idx].has_lower || specs[range_idx].lower_inclusive;
+        bool upper_inclusive = !range_used || !specs[range_idx].has_upper || specs[range_idx].upper_inclusive;
+
+        lower = has_lower
+                    ? (lower_inclusive ? ih_->lower_bound(low_key.data()) : ih_->upper_bound(low_key.data()))
+                    : ih_->leaf_begin();
+        upper = has_upper
+                    ? (upper_inclusive ? ih_->upper_bound(high_key.data()) : ih_->lower_bound(high_key.data()))
+                    : ih_->leaf_end();
+        return true;
+    }
+
     /** @brief 从 scan_ 当前位置推进到第一条满足 conds_ 条件的记录 */
     void advance_to_match() {
         while (!scan_->is_end()) {
@@ -105,6 +335,9 @@ class IndexScanExecutor : public AbstractExecutor {
             auto rec = fh_->get_record(scan_->rid(), context_);
             if (eval_conds(rec->data, conds_, cols_)) break;
             scan_->next();
+        }
+        if (!scan_->is_end()) {
+            rid_ = scan_->rid();
         }
     }
 
@@ -121,48 +354,18 @@ class IndexScanExecutor : public AbstractExecutor {
             int len = lhs_it->len;
             const char *lhs_val = rec_data + lhs_it->offset;
 
-            std::unique_ptr<char[]> rhs_buf;
-            const char *rhs_val = nullptr;
-            ColType rhs_type = lhs_type;
+            int cmp = 0;
             if (cond.is_rhs_val) {
-                rhs_type = cond.rhs_val.type;
-                rhs_buf = std::make_unique<char[]>(len);
-                memset(rhs_buf.get(), 0, len);
-                if (cond.rhs_val.type == TYPE_INT) {
-                    if (lhs_type == TYPE_BIGINT) {
-                        *(int64_t *)rhs_buf.get() = static_cast<int64_t>(cond.rhs_val.int_val);
-                    } else {
-                        *(int *)rhs_buf.get() = cond.rhs_val.int_val;
-                    }
-                } else if (cond.rhs_val.type == TYPE_BIGINT) {
-                    if (lhs_type == TYPE_INT) {
-                        int64_t v = cond.rhs_val.bigint_val;
-                        if (v > INT_MAX || v < INT_MIN) {
-                            return false;
-                        }
-                        *(int *)rhs_buf.get() = static_cast<int>(v);
-                    } else {
-                        *(int64_t *)rhs_buf.get() = cond.rhs_val.bigint_val;
-                    }
-                } else if (cond.rhs_val.type == TYPE_FLOAT) {
-                    *(float *)rhs_buf.get() = cond.rhs_val.float_val;
-                } else if (cond.rhs_val.type == TYPE_DATETIME) {
-                    *(int64_t *)rhs_buf.get() = cond.rhs_val.bigint_val;
-                } else {
-                    memcpy(rhs_buf.get(), cond.rhs_val.str_val.c_str(),
-                           std::min((int)cond.rhs_val.str_val.size(), len));
-                }
-                rhs_val = rhs_buf.get();
+                cmp = TypeCaster::compare_raw_with_value(lhs_val, lhs_type, len, cond.rhs_val);
             } else {
                 auto rhs_it = std::find_if(cols.begin(), cols.end(), [&](const ColMeta &c) {
                     return c.tab_name == cond.rhs_col.tab_name && c.name == cond.rhs_col.col_name;
                 });
                 if (rhs_it == cols.end()) return false;
-                rhs_type = rhs_it->type;
-                rhs_val = rec_data + rhs_it->offset;
+                cmp = TypeCaster::compare_raw(lhs_val, lhs_type, len,
+                                              rec_data + rhs_it->offset, rhs_it->type, rhs_it->len);
             }
 
-            int cmp = compare_value(lhs_val, rhs_val, lhs_type, rhs_type, len, cond.is_rhs_val ? &cond.rhs_val : nullptr);
             bool ok = false;
             switch (cond.op) {
                 case OP_EQ: ok = (cmp == 0); break;
@@ -175,38 +378,5 @@ class IndexScanExecutor : public AbstractExecutor {
             if (!ok) return false;
         }
         return true;
-    }
-
-    static int compare_value(const char *a, const char *b, ColType lhs_type, ColType rhs_type, int len, const Value *rhs_literal) {
-        if ((lhs_type == TYPE_INT || lhs_type == TYPE_FLOAT) &&
-            (rhs_type == TYPE_INT || rhs_type == TYPE_FLOAT) &&
-            lhs_type != rhs_type) {
-            double lhs_num = lhs_type == TYPE_FLOAT ? static_cast<double>(*reinterpret_cast<const float *>(a))
-                                                    : static_cast<double>(*reinterpret_cast<const int *>(a));
-            double rhs_num = 0.0;
-            if (rhs_literal != nullptr) {
-                rhs_num = rhs_type == TYPE_FLOAT ? static_cast<double>(rhs_literal->float_val)
-                                                 : static_cast<double>(rhs_literal->int_val);
-            } else {
-                rhs_num = rhs_type == TYPE_FLOAT ? static_cast<double>(*reinterpret_cast<const float *>(b))
-                                                 : static_cast<double>(*reinterpret_cast<const int *>(b));
-            }
-            if (fabs(lhs_num - rhs_num) < 1e-9) return 0;
-            return lhs_num < rhs_num ? -1 : 1;
-        }
-        if (lhs_type == TYPE_INT) {
-            int ia = *(const int *)a, ib = *(const int *)b;
-            return (ia < ib) ? -1 : (ia > ib) ? 1 : 0;
-        }
-        if (lhs_type == TYPE_FLOAT) {
-            float fa = *(const float *)a, fb = *(const float *)b;
-            if (fabs(fa - fb) < 1e-9) return 0;
-            return (fa < fb) ? -1 : 1;
-        }
-        if (lhs_type == TYPE_BIGINT || lhs_type == TYPE_DATETIME) {
-            int64_t ia = *(const int64_t *)a, ib = *(const int64_t *)b;
-            return (ia < ib) ? -1 : (ia > ib) ? 1 : 0;
-        }
-        return strncmp(a, b, len);
     }
 };
