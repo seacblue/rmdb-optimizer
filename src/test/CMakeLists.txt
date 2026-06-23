@@ -94,17 +94,50 @@ add_test(NAME test_execution COMMAND test_execution
 
 # ==================== OJ/冒烟测试 (oj/) ====================
 
-# -------------------- OJ 接口兼容性参考测试 --------------------
-# 跨模块集成测试，覆盖 DiskManager / LRUReplacer / BufferPoolManager / RmFileHandle / RmScan
-# 参照题目描述中明确列出的全部接口，提供兼容性验证
-# 编译 & 运行: make test_oj -j$(nproc) && ./bin/test_oj
-add_executable(test_oj oj/test_oj_integrity.cpp)
-target_link_libraries(test_oj record storage lru_replacer ${TEST_LIBS})
-target_include_directories(test_oj PRIVATE ${TEST_INCLUDES})
+# -------------------- 存储管理 OJ 测试 --------------------
+# Problem 1: 存储管理测试
+# 编译 & 运行: make test_oj_storage -j$(nproc) && ./bin/test_oj_storage
+add_executable(test_oj_storage oj/test_oj_integrity.cpp)
+target_link_libraries(test_oj_storage record storage lru_replacer ${TEST_LIBS})
+target_include_directories(test_oj_storage PRIVATE ${TEST_INCLUDES})
 # 静态库循环依赖（record↔system）通过 --start-group 解决
-target_link_options(test_oj PRIVATE -Wl,--start-group)
-target_link_options(test_oj PRIVATE -Wl,--end-group)
-add_test(NAME test_oj COMMAND test_oj
+target_link_options(test_oj_storage PRIVATE -Wl,--start-group)
+target_link_options(test_oj_storage PRIVATE -Wl,--end-group)
+add_test(NAME test_oj_storage COMMAND test_oj_storage
+    WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+
+
+# -------------------- 查询执行 OJ 测试 --------------------
+# Problem 2: SQL 查询执行（SELECT/INSERT/UPDATE/DELETE/JOIN）
+# 编译 & 运行: make test_oj_execution -j$(nproc) && ./bin/test_oj_execution
+add_executable(test_oj_execution oj/test_oj_execution.cpp)
+target_link_libraries(test_oj_execution execution system record index storage lru_replacer parser planner analyze ${TEST_LIBS})
+target_include_directories(test_oj_execution PRIVATE ${TEST_INCLUDES})
+target_link_options(test_oj_execution PRIVATE -Wl,--start-group)
+target_link_options(test_oj_execution PRIVATE -Wl,--end-group)
+add_test(NAME test_oj_execution COMMAND test_oj_execution
+    WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+
+# -------------------- BIGINT OJ 测试 --------------------
+# Problem 3: BIGINT 类型支持
+# 编译 & 运行: make test_oj_bigint -j$(nproc) && ./bin/test_oj_bigint
+add_executable(test_oj_bigint oj/test_oj_bigint.cpp)
+target_link_libraries(test_oj_bigint execution system record index storage lru_replacer parser planner analyze ${TEST_LIBS})
+target_include_directories(test_oj_bigint PRIVATE ${TEST_INCLUDES})
+target_link_options(test_oj_bigint PRIVATE -Wl,--start-group)
+target_link_options(test_oj_bigint PRIVATE -Wl,--end-group)
+add_test(NAME test_oj_bigint COMMAND test_oj_bigint
+    WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+
+# -------------------- DATETIME OJ 测试 --------------------
+# Problem 4: DATETIME 类型支持
+# 编译 & 运行: make test_oj_datetime -j$(nproc) && ./bin/test_oj_datetime
+add_executable(test_oj_datetime oj/test_oj_datetime.cpp)
+target_link_libraries(test_oj_datetime execution system record index storage lru_replacer parser planner analyze ${TEST_LIBS})
+target_include_directories(test_oj_datetime PRIVATE ${TEST_INCLUDES})
+target_link_options(test_oj_datetime PRIVATE -Wl,--start-group)
+target_link_options(test_oj_datetime PRIVATE -Wl,--end-group)
+add_test(NAME test_oj_datetime COMMAND test_oj_datetime
     WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
 
 # ==================== 压力测试 (stress/) ====================

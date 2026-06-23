@@ -16,12 +16,12 @@ See the Mulan PSL v2 for more details. */
 #include <string>
 #include <vector>
 #include "defs.h"
+#include "datetime_utils.h"
 #include "record/rm_defs.h"
 
 namespace ast {
 struct Expr;
 }
-
 
 struct TabCol {
     std::string tab_name;
@@ -32,11 +32,14 @@ struct TabCol {
     }
 };
 
+// ============================================================
+
 struct Value {
     ColType type;  // type of value
     union {
-        int int_val;      // int value
-        float float_val;  // float value
+        int int_val;        // int value
+        float float_val;    // float value
+        int64_t bigint_val; // bigint value
     };
     std::string str_val;  // string value
 
@@ -45,6 +48,16 @@ struct Value {
     void set_int(int int_val_) {
         type = TYPE_INT;
         int_val = int_val_;
+    }
+
+    void set_bigint(int64_t bigint_val_) {
+        type = TYPE_BIGINT;
+        bigint_val = bigint_val_;
+    }
+
+    void set_datetime(int64_t datetime_val_) {
+        type = TYPE_DATETIME;
+        bigint_val = datetime_val_;
     }
 
     void set_float(float float_val_) {
@@ -66,6 +79,12 @@ struct Value {
         } else if (type == TYPE_FLOAT) {
             assert(len == sizeof(float));
             *(float *)(raw->data) = float_val;
+        } else if (type == TYPE_BIGINT) {
+            assert(len == sizeof(int64_t));
+            *(int64_t *)(raw->data) = bigint_val;
+        } else if (type == TYPE_DATETIME) {
+            assert(len == sizeof(int64_t));
+            *(int64_t *)(raw->data) = bigint_val;
         } else if (type == TYPE_STRING) {
             if (len < (int)str_val.size()) {
                 throw StringOverflowError();

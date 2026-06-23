@@ -11,6 +11,7 @@ See the Mulan PSL v2 for more details. */
 #pragma once
 
 #include <cmath>
+#include <climits>
 #include "execution_defs.h"
 #include "execution_manager.h"
 #include "executor_abstract.h"
@@ -104,13 +105,30 @@ class SeqScanExecutor : public AbstractExecutor {
             const char *rhs_val = nullptr;
             ColType rhs_type = lhs_type;
             if (cond.is_rhs_val) {
-                rhs_type = cond.rhs_val.type;
                 rhs_buf = std::make_unique<char[]>(len);
                 memset(rhs_buf.get(), 0, len);
                 if (cond.rhs_val.type == TYPE_INT) {
-                    *(int *)rhs_buf.get() = cond.rhs_val.int_val;
+                    if (lhs_type == TYPE_BIGINT) {
+                        // Implicit widen int → bigint
+                        *(int64_t *)rhs_buf.get() = static_cast<int64_t>(cond.rhs_val.int_val);
+                    } else {
+                        *(int *)rhs_buf.get() = cond.rhs_val.int_val;
+                    }
+                } else if (cond.rhs_val.type == TYPE_BIGINT) {
+                    if (lhs_type == TYPE_INT) {
+                        // Implicit narrow bigint → int (if value fits)
+                        int64_t v = cond.rhs_val.bigint_val;
+                        if (v > INT_MAX || v < INT_MIN) {
+                            return false;  // overflow, condition fails
+                        }
+                        *(int *)rhs_buf.get() = static_cast<int>(v);
+                    } else {
+                        *(int64_t *)rhs_buf.get() = cond.rhs_val.bigint_val;
+                    }
                 } else if (cond.rhs_val.type == TYPE_FLOAT) {
                     *(float *)rhs_buf.get() = cond.rhs_val.float_val;
+                } else if (cond.rhs_val.type == TYPE_DATETIME) {
+                    *(int64_t *)rhs_buf.get() = cond.rhs_val.bigint_val;
                 } else {
                     memcpy(rhs_buf.get(), cond.rhs_val.str_val.c_str(),
                            std::min((int)cond.rhs_val.str_val.size(), len));
@@ -168,6 +186,10 @@ class SeqScanExecutor : public AbstractExecutor {
             float fa = *(const float *)a, fb = *(const float *)b;
             if (fabs(fa - fb) < 1e-9) return 0;
             return (fa < fb) ? -1 : 1;
+        }
+        if (lhs_type == TYPE_BIGINT || lhs_type == TYPE_DATETIME) {
+            int64_t ia = *(const int64_t *)a, ib = *(const int64_t *)b;
+            return (ia < ib) ? -1 : (ia > ib) ? 1 : 0;
         }
         // TYPE_STRING
         return strncmp(a, b, len);
