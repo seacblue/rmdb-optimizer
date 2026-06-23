@@ -129,19 +129,19 @@ class IndexScanExecutor : public AbstractExecutor {
         Value v;
         switch (col.type) {
             case TYPE_INT:
-                v.set_int(std::numeric_limits<int>::min());
+                v = Value::make_int(std::numeric_limits<int>::min());
                 break;
             case TYPE_BIGINT:
-                v.set_bigint(std::numeric_limits<int64_t>::min());
+                v = Value::make_bigint(std::numeric_limits<int64_t>::min());
                 break;
             case TYPE_FLOAT:
-                v.set_float(std::numeric_limits<float>::lowest());
+                v = Value::make_float(std::numeric_limits<float>::lowest());
                 break;
             case TYPE_STRING:
-                v.set_str(std::string());
+                v = Value::make_string(std::string());
                 break;
             case TYPE_DATETIME:
-                v.set_datetime(datetime_str_to_int64("1000-01-01 00:00:00"));
+                v = Value::make_datetime(datetime_str_to_int64("1000-01-01 00:00:00"));
                 break;
             default:
                 throw InternalError("Unexpected index column type");
@@ -153,19 +153,19 @@ class IndexScanExecutor : public AbstractExecutor {
         Value v;
         switch (col.type) {
             case TYPE_INT:
-                v.set_int(std::numeric_limits<int>::max());
+                v = Value::make_int(std::numeric_limits<int>::max());
                 break;
             case TYPE_BIGINT:
-                v.set_bigint(std::numeric_limits<int64_t>::max());
+                v = Value::make_bigint(std::numeric_limits<int64_t>::max());
                 break;
             case TYPE_FLOAT:
-                v.set_float(std::numeric_limits<float>::max());
+                v = Value::make_float(std::numeric_limits<float>::max());
                 break;
             case TYPE_STRING:
-                v.set_str(std::string(col.len, static_cast<char>(0xFF)));
+                v = Value::make_string(std::string(col.len, static_cast<char>(0xFF)));
                 break;
             case TYPE_DATETIME:
-                v.set_datetime(datetime_str_to_int64("9999-12-31 23:59:59"));
+                v = Value::make_datetime(datetime_str_to_int64("9999-12-31 23:59:59"));
                 break;
             default:
                 throw InternalError("Unexpected index column type");

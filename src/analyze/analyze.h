@@ -88,14 +88,10 @@ inline Value eval_set_expr(const std::shared_ptr<ast::Expr>& expr,
             return TypeCaster::parse_integer_literal(int_lit->val);
         }
         if (auto float_lit = std::dynamic_pointer_cast<ast::FloatLit>(node)) {
-            Value val;
-            val.set_float(float_lit->val);
-            return val;
+            return Value::make_float(float_lit->val);
         }
         if (auto str_lit = std::dynamic_pointer_cast<ast::StringLit>(node)) {
-            Value val;
-            val.set_str(str_lit->val);
-            return val;
+            return Value::make_string(str_lit->val);
         }
         if (auto col = std::dynamic_pointer_cast<ast::Col>(node)) {
             return eval_col(col);

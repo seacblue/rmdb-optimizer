@@ -86,82 +86,71 @@ class TypeCaster {
     }
 
     static Value make_integer_value(int64_t value, ColType preferred_type = TYPE_INT) {
-        Value result;
         if (preferred_type == TYPE_BIGINT) {
-            result.set_bigint(value);
-            return result;
+            return Value::make_bigint(value);
         }
         if (value < std::numeric_limits<int>::min() || value > std::numeric_limits<int>::max()) {
-            result.set_bigint(value);
-        } else {
-            result.set_int(static_cast<int>(value));
+            return Value::make_bigint(value);
         }
-        return result;
+        return Value::make_int(static_cast<int>(value));
     }
 
     static Value cast_value(const Value &value, ColType target_type, int target_len = 0) {
-        Value result;
         switch (target_type) {
             case TYPE_INT: {
                 if (!is_numeric(value.type)) {
                     throw IncompatibleTypeError(coltype2str(target_type), coltype2str(value.type));
                 }
-                long double numeric = to_long_double(value);
+                long double numeric = value.as_numeric();
                 if (!std::isfinite(static_cast<double>(numeric)) ||
                     numeric < std::numeric_limits<int>::min() ||
                     numeric > std::numeric_limits<int>::max()) {
-                    throw NumericOverflowError(coltype2str(target_type), value_debug_string(value));
+                    throw NumericOverflowError(coltype2str(target_type), value.debug_string());
                 }
-                result.set_int(static_cast<int>(numeric));
-                return result;
+                return Value::make_int(static_cast<int>(numeric));
             }
             case TYPE_BIGINT: {
                 if (!is_numeric(value.type)) {
                     throw IncompatibleTypeError(coltype2str(target_type), coltype2str(value.type));
                 }
-                long double numeric = to_long_double(value);
+                long double numeric = value.as_numeric();
                 if (!std::isfinite(static_cast<double>(numeric)) ||
                     numeric < static_cast<long double>(std::numeric_limits<int64_t>::min()) ||
                     numeric > static_cast<long double>(std::numeric_limits<int64_t>::max())) {
-                    throw NumericOverflowError(coltype2str(target_type), value_debug_string(value));
+                    throw NumericOverflowError(coltype2str(target_type), value.debug_string());
                 }
-                result.set_bigint(static_cast<int64_t>(numeric));
-                return result;
+                return Value::make_bigint(static_cast<int64_t>(numeric));
             }
             case TYPE_FLOAT: {
                 if (!is_numeric(value.type)) {
                     throw IncompatibleTypeError(coltype2str(target_type), coltype2str(value.type));
                 }
-                long double numeric = to_long_double(value);
+                long double numeric = value.as_numeric();
                 if (!std::isfinite(static_cast<double>(numeric))) {
-                    throw NumericOverflowError(coltype2str(target_type), value_debug_string(value));
+                    throw NumericOverflowError(coltype2str(target_type), value.debug_string());
                 }
-                result.set_float(static_cast<float>(numeric));
-                return result;
+                return Value::make_float(static_cast<float>(numeric));
             }
             case TYPE_STRING: {
                 if (value.type != TYPE_STRING) {
                     throw IncompatibleTypeError(coltype2str(target_type), coltype2str(value.type));
                 }
-                if (target_len > 0 && static_cast<int>(value.str_val.size()) > target_len) {
+                if (target_len > 0 && static_cast<int>(value.as_string().size()) > target_len) {
                     throw StringOverflowError();
                 }
-                result.set_str(value.str_val);
-                return result;
+                return Value::make_string(value.as_string());
             }
             case TYPE_DATETIME: {
                 if (value.type == TYPE_DATETIME) {
-                    result.set_datetime(value.bigint_val);
-                    return result;
+                    return Value::make_datetime(value.as_datetime());
                 }
                 if (value.type != TYPE_STRING) {
                     throw IncompatibleTypeError(coltype2str(target_type), coltype2str(value.type));
                 }
-                if (!validate_datetime_str(value.str_val)) {
-                    throw InvalidDatetimeError(value.str_val);
+                if (!validate_datetime_str(value.as_string())) {
+                    throw InvalidDatetimeError(value.as_string());
                 }
-                result.set_datetime(datetime_str_to_int64(value.str_val));
-                return result;
+                return Value::make_datetime(datetime_str_to_int64(value.as_string()));
             }
             default:
                 throw InternalError("Unexpected target type");
@@ -169,41 +158,22 @@ class TypeCaster {
     }
 
     static Value read_raw_value(const char *data, ColType type, int len) {
-        Value result;
-        switch (type) {
-            case TYPE_INT:
-                result.set_int(*reinterpret_cast<const int *>(data));
-                return result;
-            case TYPE_BIGINT:
-                result.set_bigint(*reinterpret_cast<const int64_t *>(data));
-                return result;
-            case TYPE_DATETIME:
-                result.set_datetime(*reinterpret_cast<const int64_t *>(data));
-                return result;
-            case TYPE_FLOAT:
-                result.set_float(*reinterpret_cast<const float *>(data));
-                return result;
-            case TYPE_STRING:
-                result.set_str(std::string(data, strnlen(data, len)));
-                return result;
-            default:
-                throw InternalError("Unexpected raw value type");
-        }
+        return Value::from_raw(type, data, len);
     }
 
     static int compare_values(const Value &lhs, const Value &rhs) {
         if (is_numeric(lhs.type) && is_numeric(rhs.type)) {
             ColType common = common_numeric_type(lhs.type, rhs.type);
             if (common == TYPE_FLOAT) {
-                long double lhs_num = to_long_double(lhs);
-                long double rhs_num = to_long_double(rhs);
+                long double lhs_num = lhs.as_numeric();
+                long double rhs_num = rhs.as_numeric();
                 if (std::abs(lhs_num - rhs_num) < 1e-9L) {
                     return 0;
                 }
                 return lhs_num < rhs_num ? -1 : 1;
             }
-            int64_t lhs_num = to_int64(cast_value(lhs, TYPE_BIGINT));
-            int64_t rhs_num = to_int64(cast_value(rhs, TYPE_BIGINT));
+            int64_t lhs_num = cast_value(lhs, TYPE_BIGINT).as_integer();
+            int64_t rhs_num = cast_value(rhs, TYPE_BIGINT).as_integer();
             return lhs_num < rhs_num ? -1 : (lhs_num > rhs_num ? 1 : 0);
         }
 
@@ -214,12 +184,12 @@ class TypeCaster {
             return compare_values(cast_value(lhs, TYPE_DATETIME), rhs);
         }
         if (lhs.type == TYPE_DATETIME && rhs.type == TYPE_DATETIME) {
-            int64_t lhs_dt = lhs.bigint_val;
-            int64_t rhs_dt = rhs.bigint_val;
+            int64_t lhs_dt = lhs.as_datetime();
+            int64_t rhs_dt = rhs.as_datetime();
             return lhs_dt < rhs_dt ? -1 : (lhs_dt > rhs_dt ? 1 : 0);
         }
         if (lhs.type == TYPE_STRING && rhs.type == TYPE_STRING) {
-            return lhs.str_val.compare(rhs.str_val);
+            return lhs.as_string().compare(rhs.as_string());
         }
         throw IncompatibleTypeError(coltype2str(lhs.type), coltype2str(rhs.type));
     }
@@ -237,34 +207,19 @@ class TypeCaster {
     }
 
     static std::string format_raw_value(const char *data, ColType type, int len) {
-        switch (type) {
-            case TYPE_INT:
-                return std::to_string(*reinterpret_cast<const int *>(data));
-            case TYPE_BIGINT:
-                return std::to_string(*reinterpret_cast<const int64_t *>(data));
-            case TYPE_DATETIME:
-                return int64_to_datetime_str(*reinterpret_cast<const int64_t *>(data));
-            case TYPE_FLOAT:
-                return std::to_string(*reinterpret_cast<const float *>(data));
-            case TYPE_STRING:
-                return std::string(data, strnlen(data, len));
-            default:
-                throw InternalError("Unexpected format type");
-        }
+        return Value::from_raw(type, data, len).debug_string();
     }
 
     static Value negate_value(const Value &value) {
         if (value.type == TYPE_FLOAT) {
-            Value result;
-            result.set_float(-value.float_val);
-            return result;
+            return Value::make_float(-value.as_float());
         }
         if (!is_integer(value.type)) {
             throw IncompatibleTypeError(coltype2str(value.type), "NUMERIC");
         }
-        int64_t numeric = to_int64(value);
+        int64_t numeric = value.as_integer();
         if (numeric == std::numeric_limits<int64_t>::min()) {
-            throw NumericOverflowError("BIGINT", value_debug_string(value));
+            throw NumericOverflowError("BIGINT", value.debug_string());
         }
         return make_integer_value(-numeric, value.type == TYPE_BIGINT ? TYPE_BIGINT : TYPE_INT);
     }
@@ -276,8 +231,8 @@ class TypeCaster {
 
         ColType common = common_numeric_type(lhs.type, rhs.type);
         if (common == TYPE_FLOAT) {
-            long double lhs_num = to_long_double(lhs);
-            long double rhs_num = to_long_double(rhs);
+            long double lhs_num = lhs.as_numeric();
+            long double rhs_num = rhs.as_numeric();
             if (op == '/' && std::abs(rhs_num) < 1e-12L) {
                 throw InternalError("Division by zero in update expression");
             }
@@ -299,12 +254,11 @@ class TypeCaster {
                     throw InternalError("Unexpected arithmetic operator");
             }
             Value result;
-            result.set_float(static_cast<float>(result_num));
-            return result;
+            return Value::make_float(static_cast<float>(result_num));
         }
 
-        int64_t lhs_num = to_int64(cast_value(lhs, TYPE_BIGINT));
-        int64_t rhs_num = to_int64(cast_value(rhs, TYPE_BIGINT));
+        int64_t lhs_num = cast_value(lhs, TYPE_BIGINT).as_integer();
+        int64_t rhs_num = cast_value(rhs, TYPE_BIGINT).as_integer();
         if (op == '/' && rhs_num == 0) {
             throw InternalError("Division by zero in update expression");
         }
@@ -312,22 +266,22 @@ class TypeCaster {
         switch (op) {
             case '+':
                 if (__builtin_add_overflow(lhs_num, rhs_num, &result_num)) {
-                    throw NumericOverflowError("BIGINT", value_debug_string(lhs) + " + " + value_debug_string(rhs));
+                    throw NumericOverflowError("BIGINT", lhs.debug_string() + " + " + rhs.debug_string());
                 }
                 break;
             case '-':
                 if (__builtin_sub_overflow(lhs_num, rhs_num, &result_num)) {
-                    throw NumericOverflowError("BIGINT", value_debug_string(lhs) + " - " + value_debug_string(rhs));
+                    throw NumericOverflowError("BIGINT", lhs.debug_string() + " - " + rhs.debug_string());
                 }
                 break;
             case '*':
                 if (__builtin_mul_overflow(lhs_num, rhs_num, &result_num)) {
-                    throw NumericOverflowError("BIGINT", value_debug_string(lhs) + " * " + value_debug_string(rhs));
+                    throw NumericOverflowError("BIGINT", lhs.debug_string() + " * " + rhs.debug_string());
                 }
                 break;
             case '/':
                 if (lhs_num == std::numeric_limits<int64_t>::min() && rhs_num == -1) {
-                    throw NumericOverflowError("BIGINT", value_debug_string(lhs) + " / " + value_debug_string(rhs));
+                    throw NumericOverflowError("BIGINT", lhs.debug_string() + " / " + rhs.debug_string());
                 }
                 result_num = lhs_num / rhs_num;
                 break;
@@ -335,48 +289,5 @@ class TypeCaster {
                 throw InternalError("Unexpected arithmetic operator");
         }
         return make_integer_value(result_num, common == TYPE_BIGINT ? TYPE_BIGINT : TYPE_INT);
-    }
-
-   private:
-    static long double to_long_double(const Value &value) {
-        switch (value.type) {
-            case TYPE_INT:
-                return static_cast<long double>(value.int_val);
-            case TYPE_BIGINT:
-            case TYPE_DATETIME:
-                return static_cast<long double>(value.bigint_val);
-            case TYPE_FLOAT:
-                return static_cast<long double>(value.float_val);
-            default:
-                throw IncompatibleTypeError(coltype2str(value.type), "NUMERIC");
-        }
-    }
-
-    static int64_t to_int64(const Value &value) {
-        switch (value.type) {
-            case TYPE_INT:
-                return static_cast<int64_t>(value.int_val);
-            case TYPE_BIGINT:
-            case TYPE_DATETIME:
-                return value.bigint_val;
-            default:
-                throw IncompatibleTypeError(coltype2str(value.type), "INTEGER");
-        }
-    }
-
-    static std::string value_debug_string(const Value &value) {
-        switch (value.type) {
-            case TYPE_INT:
-                return std::to_string(value.int_val);
-            case TYPE_BIGINT:
-            case TYPE_DATETIME:
-                return std::to_string(value.bigint_val);
-            case TYPE_FLOAT:
-                return std::to_string(value.float_val);
-            case TYPE_STRING:
-                return value.str_val;
-            default:
-                return "<unknown>";
-        }
     }
 };

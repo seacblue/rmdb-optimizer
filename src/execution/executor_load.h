@@ -86,11 +86,11 @@ class LoadExecutor : public AbstractExecutor {
                     const auto &col = ordered_cols[i];
                     Value value;
                     if (col.type == TYPE_FLOAT) {
-                        value.set_float(std::stof(fields[i]));
+                        value = Value::make_float(std::stof(fields[i]));
                     } else if (col.type == TYPE_STRING) {
-                        value.set_str(fields[i]);
+                        value = Value::make_string(fields[i]);
                     } else {
-                        value.set_str(fields[i]);
+                        value = Value::make_string(fields[i]);
                     }
                     value = (col.type == TYPE_INT || col.type == TYPE_BIGINT)
                                 ? TypeCaster::cast_value(TypeCaster::parse_integer_literal(fields[i]), col.type, col.len)
