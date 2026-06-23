@@ -202,9 +202,6 @@ void SmManager::show_tables(Context* context) {
         }
     }
     printer.print_separator(context);
-    if (outfile != nullptr) {
-        *outfile << "\n";
-    }
 }
 
 void SmManager::show_index(const std::string& tab_name, Context* context) {
@@ -232,10 +229,6 @@ void SmManager::show_index(const std::string& tab_name, Context* context) {
         if (outfile != nullptr) {
             *outfile << line;
         }
-    }
-    append_context_output(context, "\n");
-    if (outfile != nullptr) {
-        *outfile << "\n";
     }
 }
 
@@ -268,9 +261,6 @@ void SmManager::desc_table(const std::string& tab_name, Context* context) {
     }
     // Print footer
     printer.print_separator(context);
-    if (outfile != nullptr) {
-        *outfile << "\n";
-    }
 }
 
 /**

@@ -190,9 +190,6 @@ void QlManager::select_from(std::unique_ptr<AbstractExecutor> executorTreeRoot, 
     rec_printer.print_separator(context);
     // Print record count into buffer
     RecordPrinter::print_record_count(num_rec, context);
-    if (outfile != nullptr) {
-        *outfile << "\n";
-    }
 }
 
 // 执行DML语句

@@ -224,7 +224,7 @@ TEST_F(SmManagerTest, ShowTables) {
     ASSERT_TRUE(ifs.is_open());
     std::stringstream ss;
     ss << ifs.rdbuf();
-    EXPECT_EQ(ss.str(), "| Tables |\n| tab_a |\n| tab_b |\n\n");
+    EXPECT_EQ(ss.str(), "| Tables |\n| tab_a |\n| tab_b |\n");
 
     sm_manager_->close_db();
 }
