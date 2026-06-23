@@ -9,10 +9,6 @@ MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 See the Mulan PSL v2 for more details. */
 
 #pragma once
-#include <unordered_map>
-#include <unordered_set>
-#include "analyze/analyze.h"
-#include "common/type_cast.h"
 #include "execution_defs.h"
 #include "execution_manager.h"
 #include "executor_abstract.h"
@@ -42,93 +38,47 @@ class UpdateExecutor : public AbstractExecutor {
         context_ = context;
     }
     std::unique_ptr<RmRecord> Next() override {
-        if (rids_.empty()) return nullptr;
-        std::unordered_map<std::string, size_t> col_offset;
-        for (size_t i = 0; i < tab_.cols.size(); ++i) {
-            col_offset[tab_.cols[i].name] = i;
-            col_offset[tab_.cols[i].tab_name + "." + tab_.cols[i].name] = i;
-        }
-
-        struct PreparedUpdate {
-            Rid rid;
-            std::unique_ptr<RmRecord> old_rec;
-            std::unique_ptr<RmRecord> new_rec;
-            std::vector<std::string> old_keys;
-            std::vector<std::string> new_keys;
-        };
-
-        std::vector<PreparedUpdate> prepared;
-        prepared.reserve(rids_.size());
-        std::vector<std::unordered_set<std::string>> seen_new_keys(tab_.indexes.size());
-
+        // 遍历所有待更新的 Rid，逐条更新记录
         for (auto &rid : rids_) {
-            PreparedUpdate item;
-            item.rid = rid;
-            item.old_rec = fh_->get_record(rid, context_);
-            item.new_rec = std::make_unique<RmRecord>(*item.old_rec);
+            // 读取旧记录
+            auto rec = fh_->get_record(rid, context_);
 
-            for (auto &clause : set_clauses_) {
-                auto it = get_col(tab_.cols, clause.lhs);
-                Value rhs_value = clause.rhs_expr != nullptr
-                    ? eval_set_expr(clause.rhs_expr, item.new_rec->data, tab_.cols, col_offset)
-                    : clause.rhs;
-                rhs_value = TypeCaster::cast_value(rhs_value, it->type, it->len);
-                rhs_value.init_raw(it->len);
-                memcpy(item.new_rec->data + it->offset, rhs_value.raw->data, it->len);
-            }
-
-            for (size_t j = 0; j < tab_.indexes.size(); ++j) {
-                auto &index = tab_.indexes[j];
+            // 删除旧记录的索引条目（先删后插，避免唯一性冲突）
+            for (auto &index : tab_.indexes) {
                 auto ih = sm_manager_->ihs_.at(
                     sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
-
-                std::string old_key;
-                std::string new_key;
-                old_key.reserve(index.col_tot_len);
-                new_key.reserve(index.col_tot_len);
-                for (size_t k = 0; k < (size_t)index.col_num; ++k) {
-                    old_key.append(item.old_rec->data + index.cols[k].offset, index.cols[k].len);
-                    new_key.append(item.new_rec->data + index.cols[k].offset, index.cols[k].len);
+                char *key = new char[index.col_tot_len];
+                int offset = 0;
+                for (size_t i = 0; i < index.col_num; ++i) {
+                    memcpy(key + offset, rec->data + index.cols[i].offset, index.cols[i].len);
+                    offset += index.cols[i].len;
                 }
-                item.old_keys.push_back(old_key);
-                item.new_keys.push_back(new_key);
-
-                if (old_key != new_key) {
-                    if (!seen_new_keys[j].insert(new_key).second) {
-                        throw UniqueConstraintError(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols));
-                    }
-                    std::vector<Rid> result;
-                    if (ih->get_value(new_key.data(), &result, context_->txn_)) {
-                        throw UniqueConstraintError(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols));
-                    }
-                }
+                ih->delete_entry(key, context_->txn_);
+                delete[] key;
             }
 
-            prepared.push_back(std::move(item));
-        }
+            // 应用 SET 子句修改字段值
+            for (auto &set_clause : set_clauses_) {
+                auto col = tab_.get_col(set_clause.lhs.col_name);
+                memcpy(rec->data + col->offset, set_clause.rhs.raw->data, col->len);
+            }
 
-        for (auto &item : prepared) {
-            for (size_t j = 0; j < tab_.indexes.size(); ++j) {
-                auto &index = tab_.indexes[j];
+            // 更新记录到文件（原地覆盖）
+            fh_->update_record(rid, rec->data, context_);
+
+            // 插入新记录的索引条目
+            for (auto &index : tab_.indexes) {
                 auto ih = sm_manager_->ihs_.at(
                     sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
-
-                if (item.old_keys[j] != item.new_keys[j]) {
-                    ih->delete_entry(item.old_keys[j].data(), context_->txn_);
+                char *key = new char[index.col_tot_len];
+                int offset = 0;
+                for (size_t i = 0; i < index.col_num; ++i) {
+                    memcpy(key + offset, rec->data + index.cols[i].offset, index.cols[i].len);
+                    offset += index.cols[i].len;
                 }
+                ih->insert_entry(key, rid, context_->txn_);
+                delete[] key;
             }
-
-            for (size_t j = 0; j < tab_.indexes.size(); ++j) {
-                auto &index = tab_.indexes[j];
-                auto ih = sm_manager_->ihs_.at(
-                    sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
-
-                if (item.old_keys[j] != item.new_keys[j]) {
-                    ih->insert_entry(item.new_keys[j].data(), item.rid, context_->txn_);
-                }
-            }
-
-            fh_->update_record(item.rid, item.new_rec->data, context_);
         }
         return nullptr;
     }

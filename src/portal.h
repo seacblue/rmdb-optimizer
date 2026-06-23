@@ -22,7 +22,6 @@ See the Mulan PSL v2 for more details. */
 #include "execution/executor_update.h"
 #include "execution/executor_insert.h"
 #include "execution/executor_delete.h"
-#include "execution/executor_load.h"
 #include "execution/execution_sort.h"
 #include "common/common.h"
 
@@ -105,12 +104,6 @@ class Portal
             
                     return std::make_shared<PortalStmt>(PORTAL_DML_WITHOUT_SELECT, std::vector<TabCol>(), std::move(root), plan);
                 }
-                case T_Load:
-                {
-                    std::unique_ptr<AbstractExecutor> root =
-                            std::make_unique<LoadExecutor>(sm_manager_, x->tab_name_, x->file_path_, context);
-                    return std::make_shared<PortalStmt>(PORTAL_DML_WITHOUT_SELECT, std::vector<TabCol>(), std::move(root), plan);
-                }
 
 
                 default:
@@ -139,7 +132,7 @@ class Portal
             }
             case PORTAL_MULTI_QUERY:
             {
-                ql->run_multi_query(portal->plan, context);
+                ql->run_mutli_query(portal->plan, context);
                 break;
             }
             case PORTAL_CMD_UTILITY:

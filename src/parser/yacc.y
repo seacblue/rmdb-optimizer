@@ -3,7 +3,6 @@
 #include "yacc.tab.h"
 #include <iostream>
 #include <memory>
-#include <cstdint>
 
 int yylex(YYSTYPE *yylval, YYLTYPE *yylloc);
 
@@ -23,12 +22,13 @@ using namespace ast;
 
 // keywords
 %token SHOW TABLES CREATE TABLE DROP DESC INSERT INTO VALUES DELETE FROM ASC ORDER BY
-WHERE UPDATE SET SELECT INT CHAR FLOAT BIGINT DATETIME INDEX AND JOIN EXIT HELP TXN_BEGIN TXN_COMMIT TXN_ABORT TXN_ROLLBACK ORDER_BY LOAD
+WHERE UPDATE SET SELECT INT CHAR FLOAT INDEX AND JOIN EXIT HELP TXN_BEGIN TXN_COMMIT TXN_ABORT TXN_ROLLBACK ORDER_BY
 // non-keywords
 %token LEQ NEQ GEQ T_EOF
 
 // type-specific tokens
-%token <sv_str> IDENTIFIER VALUE_STRING FILE_PATH VALUE_INT
+%token <sv_str> IDENTIFIER VALUE_STRING
+%token <sv_int> VALUE_INT
 %token <sv_float> VALUE_FLOAT
 
 // specify types for non-terminal symbol
@@ -40,7 +40,7 @@ WHERE UPDATE SET SELECT INT CHAR FLOAT BIGINT DATETIME INDEX AND JOIN EXIT HELP 
 %type <sv_expr> expr
 %type <sv_val> value
 %type <sv_vals> valueList
-%type <sv_str> tbName colName loadFile
+%type <sv_str> tbName colName
 %type <sv_strs> tableList colNameList
 %type <sv_col> col
 %type <sv_cols> colList selector
@@ -50,10 +50,6 @@ WHERE UPDATE SET SELECT INT CHAR FLOAT BIGINT DATETIME INDEX AND JOIN EXIT HELP 
 %type <sv_conds> whereClause optWhereClause
 %type <sv_orderby>  order_clause opt_order_clause
 %type <sv_orderby_dir> opt_asc_desc
-
-%left '+' '-'
-%left '*' '/'
-%right UMINUS
 
 %%
 start:
@@ -110,10 +106,6 @@ dbStmt:
     {
         $$ = std::make_shared<ShowTables>();
     }
-    |   SHOW INDEX FROM tbName
-    {
-        $$ = std::make_shared<ShowIndex>($4);
-    }
     ;
 
 ddl:
@@ -147,10 +139,6 @@ dml:
     |   DELETE FROM tbName optWhereClause
     {
         $$ = std::make_shared<DeleteStmt>($3, $4);
-    }
-    |   LOAD loadFile INTO tbName
-    {
-        $$ = std::make_shared<LoadStmt>($4, $2);
     }
     |   UPDATE tbName SET setClauses optWhereClause
     {
@@ -198,19 +186,11 @@ type:
     }
     |   CHAR '(' VALUE_INT ')'
     {
-        $$ = std::make_shared<TypeLen>(SV_TYPE_STRING, std::stoi($3));
+        $$ = std::make_shared<TypeLen>(SV_TYPE_STRING, $3);
     }
     |   FLOAT
     {
         $$ = std::make_shared<TypeLen>(SV_TYPE_FLOAT, sizeof(float));
-    }
-    |   BIGINT
-    {
-        $$ = std::make_shared<TypeLen>(SV_TYPE_BIGINT, sizeof(int64_t));
-    }
-    |   DATETIME
-    {
-        $$ = std::make_shared<TypeLen>(SV_TYPE_DATETIME, sizeof(int64_t));
     }
     ;
 
@@ -237,14 +217,6 @@ value:
     |   VALUE_STRING
     {
         $$ = std::make_shared<StringLit>($1);
-    }
-    |   '-' VALUE_INT
-    {
-        $$ = std::make_shared<IntLit>("-" + $2);
-    }
-    |   '-' VALUE_FLOAT
-    {
-        $$ = std::make_shared<FloatLit>(-$2);
     }
     ;
 
@@ -332,34 +304,6 @@ expr:
     {
         $$ = std::static_pointer_cast<Expr>($1);
     }
-    |   '(' expr ')'
-    {
-        $$ = $2;
-    }
-    |   expr '+' expr
-    {
-        $$ = std::make_shared<ArithExpr>($1, SV_OP_ADD, $3);
-    }
-    |   expr '-' expr
-    {
-        $$ = std::make_shared<ArithExpr>($1, SV_OP_SUB, $3);
-    }
-    |   expr '*' expr
-    {
-        $$ = std::make_shared<ArithExpr>($1, SV_OP_MUL, $3);
-    }
-    |   expr '/' expr
-    {
-        $$ = std::make_shared<ArithExpr>($1, SV_OP_DIV, $3);
-    }
-    |   '+' expr %prec UMINUS
-    {
-        $$ = $2;
-    }
-    |   '-' expr %prec UMINUS
-    {
-        $$ = std::make_shared<UnaryExpr>(SV_OP_NEG, $2);
-    }
     ;
 
 setClauses:
@@ -374,7 +318,7 @@ setClauses:
     ;
 
 setClause:
-        colName '=' expr
+        colName '=' value
     {
         $$ = std::make_shared<SetClause>($1, $3);
     }
@@ -423,11 +367,6 @@ opt_asc_desc:
     |  DESC      { $$ = OrderBy_DESC;    }
     |       { $$ = OrderBy_DEFAULT; }
     ;    
-
-loadFile:
-        FILE_PATH
-    |   VALUE_STRING
-    ;
 
 tbName: IDENTIFIER;
 

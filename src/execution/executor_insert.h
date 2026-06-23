@@ -9,9 +9,6 @@ MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 See the Mulan PSL v2 for more details. */
 
 #pragma once
-#include <climits>
-#include <string>
-#include "common/type_cast.h"
 #include "execution_defs.h"
 #include "execution_manager.h"
 #include "executor_abstract.h"
@@ -40,55 +37,34 @@ class InsertExecutor : public AbstractExecutor {
         context_ = context;
     };
 
-    void beginTuple() override { done_ = false; }
-    void nextTuple() override { done_ = true; }
-    bool is_end() const override { return done_; }
-
     std::unique_ptr<RmRecord> Next() override {
-        if (done_) return nullptr;
-        done_ = true;
         // Make record buffer
         RmRecord rec(fh_->get_file_hdr().record_size);
         for (size_t i = 0; i < values_.size(); i++) {
             auto &col = tab_.cols[i];
-            Value val = TypeCaster::cast_value(values_[i], col.type, col.len);
+            auto &val = values_[i];
+            if (col.type != val.type) {
+                throw IncompatibleTypeError(coltype2str(col.type), coltype2str(val.type));
+            }
             val.init_raw(col.len);
             memcpy(rec.data + col.offset, val.raw->data, col.len);
-        }
-
-        for (size_t j = 0; j < tab_.indexes.size(); ++j) {
-            auto &index = tab_.indexes[j];
-            auto ih = sm_manager_->ihs_.at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
-            auto key = std::make_unique<char[]>(index.col_tot_len);
-            int offset = 0;
-            for (size_t k = 0; k < (size_t)index.col_num; ++k) {
-                memcpy(key.get() + offset, rec.data + index.cols[k].offset, index.cols[k].len);
-                offset += index.cols[k].len;
-            }
-            std::vector<Rid> result;
-            if (ih->get_value(key.get(), &result, context_->txn_)) {
-                throw UniqueConstraintError(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols));
-            }
         }
         // Insert into record file
         rid_ = fh_->insert_record(rec.data, context_);
         
         // Insert into index
-        for(size_t j = 0; j < tab_.indexes.size(); ++j) {
-            auto& index = tab_.indexes[j];
+        for(size_t i = 0; i < tab_.indexes.size(); ++i) {
+            auto& index = tab_.indexes[i];
             auto ih = sm_manager_->ihs_.at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
-            auto key = std::make_unique<char[]>(index.col_tot_len);
+            char* key = new char[index.col_tot_len];
             int offset = 0;
-            for(size_t k = 0; k < (size_t)index.col_num; ++k) {
-                memcpy(key.get() + offset, rec.data + index.cols[k].offset, index.cols[k].len);
-                offset += index.cols[k].len;
+            for(size_t i = 0; i < index.col_num; ++i) {
+                memcpy(key + offset, rec.data + index.cols[i].offset, index.cols[i].len);
+                offset += index.cols[i].len;
             }
-            ih->insert_entry(key.get(), rid_, context_->txn_);
+            ih->insert_entry(key, rid_, context_->txn_);
         }
-        return std::make_unique<RmRecord>(rec);
+        return nullptr;
     }
     Rid &rid() override { return rid_; }
-
-   private:
-    bool done_ = false;
 };

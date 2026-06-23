@@ -16,7 +16,6 @@ See the Mulan PSL v2 for more details. */
 int main() {
     std::vector<std::string> sqls = {
         "show tables;",
-        "show index from tb;",
         "desc tb;",
         "create table tb (a int, b float, c char(4));",
         "drop table tb;",
@@ -25,12 +24,8 @@ int main() {
         "drop index tb(a, b, c);",
         "drop index tb(b);",
         "insert into tb values (1, 3.14, 'pi');",
-        "load ../../src/test/stress/performance_test/table_data/warehouse.csv into tb;",
-        "load 'warehouse.csv' into tb;",
         "delete from tb where a = 1;",
         "update tb set a = 1, b = 2.2, c = 'xyz' where x = 2 and y < 1.1 and z > 'abc';",
-        "update tb set a = a + 1, b = b * 2 + 1 where x = 2;",
-        "update tb set a = -a, b = -(b + 1) where x = 2;",
         "select * from tb;",
         "select * from tb where x <> 2 and y >= 3. and z <= '123' and b < tb.a;",
         "select x.a, y.b from x, y where x.a = y.b and c = d;",

@@ -92,15 +92,6 @@ target_link_options(test_execution PRIVATE -Wl,--end-group)
 add_test(NAME test_execution COMMAND test_execution
     WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
 
-# -------------------- TypeCaster 测试 --------------------
-# 对应源代码: src/common/type_cast.h
-# 编译 & 运行: make test_type_cast -j$(nproc) && ./bin/test_type_cast
-add_executable(test_type_cast module/test_type_cast.cpp)
-target_link_libraries(test_type_cast common ${TEST_LIBS})
-target_include_directories(test_type_cast PRIVATE ${TEST_INCLUDES})
-add_test(NAME test_type_cast COMMAND test_type_cast
-    WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
-
 # ==================== OJ/冒烟测试 (oj/) ====================
 
 # -------------------- 存储管理 OJ 测试 --------------------
@@ -125,39 +116,6 @@ target_include_directories(test_oj_execution PRIVATE ${TEST_INCLUDES})
 target_link_options(test_oj_execution PRIVATE -Wl,--start-group)
 target_link_options(test_oj_execution PRIVATE -Wl,--end-group)
 add_test(NAME test_oj_execution COMMAND test_oj_execution
-    WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
-
-# -------------------- BIGINT OJ 测试 --------------------
-# Problem 3: BIGINT 类型支持
-# 编译 & 运行: make test_oj_bigint -j$(nproc) && ./bin/test_oj_bigint
-add_executable(test_oj_bigint oj/test_oj_bigint.cpp)
-target_link_libraries(test_oj_bigint execution system record index storage lru_replacer parser planner analyze ${TEST_LIBS})
-target_include_directories(test_oj_bigint PRIVATE ${TEST_INCLUDES})
-target_link_options(test_oj_bigint PRIVATE -Wl,--start-group)
-target_link_options(test_oj_bigint PRIVATE -Wl,--end-group)
-add_test(NAME test_oj_bigint COMMAND test_oj_bigint
-    WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
-
-# -------------------- DATETIME OJ 测试 --------------------
-# Problem 4: DATETIME 类型支持
-# 编译 & 运行: make test_oj_datetime -j$(nproc) && ./bin/test_oj_datetime
-add_executable(test_oj_datetime oj/test_oj_datetime.cpp)
-target_link_libraries(test_oj_datetime execution system record index storage lru_replacer parser planner analyze ${TEST_LIBS})
-target_include_directories(test_oj_datetime PRIVATE ${TEST_INCLUDES})
-target_link_options(test_oj_datetime PRIVATE -Wl,--start-group)
-target_link_options(test_oj_datetime PRIVATE -Wl,--end-group)
-add_test(NAME test_oj_datetime COMMAND test_oj_datetime
-    WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
-
-# -------------------- INDEX OJ 测试 --------------------
-# Problem 5: 索引创建/查询/维护
-# 编译 & 运行: make test_oj_index -j$(nproc) && ./bin/test_oj_index
-add_executable(test_oj_index oj/test_oj_index.cpp)
-target_link_libraries(test_oj_index execution system record index storage lru_replacer parser planner analyze ${TEST_LIBS})
-target_include_directories(test_oj_index PRIVATE ${TEST_INCLUDES})
-target_link_options(test_oj_index PRIVATE -Wl,--start-group)
-target_link_options(test_oj_index PRIVATE -Wl,--end-group)
-add_test(NAME test_oj_index COMMAND test_oj_index
     WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
 
 # ==================== 压力测试 (stress/) ====================

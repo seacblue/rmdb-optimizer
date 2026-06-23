@@ -23,7 +23,6 @@ typedef enum PlanTag{
     T_Invalid = 1,
     T_Help,
     T_ShowTable,
-    T_ShowIndex,
     T_DescTable,
     T_CreateTable,
     T_DropTable,
@@ -32,7 +31,6 @@ typedef enum PlanTag{
     T_Insert,
     T_Update,
     T_Delete,
-    T_Load,
     T_select,
     T_Transaction_begin,
     T_Transaction_commit,
@@ -140,7 +138,7 @@ class DMLPlan : public Plan
     public:
         DMLPlan(PlanTag tag, std::shared_ptr<Plan> subplan,std::string tab_name,
                 std::vector<Value> values, std::vector<Condition> conds,
-                std::vector<SetClause> set_clauses, std::string file_path = "")
+                std::vector<SetClause> set_clauses)
         {
             Plan::tag = tag;
             subplan_ = std::move(subplan);
@@ -148,7 +146,6 @@ class DMLPlan : public Plan
             values_ = std::move(values);
             conds_ = std::move(conds);
             set_clauses_ = std::move(set_clauses);
-            file_path_ = std::move(file_path);
         }
         ~DMLPlan(){}
         std::shared_ptr<Plan> subplan_;
@@ -156,7 +153,6 @@ class DMLPlan : public Plan
         std::vector<Value> values_;
         std::vector<Condition> conds_;
         std::vector<SetClause> set_clauses_;
-        std::string file_path_;
 };
 
 // ddl语句, 包括create/drop table; create/drop index;

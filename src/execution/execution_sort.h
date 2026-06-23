@@ -9,7 +9,6 @@ MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 See the Mulan PSL v2 for more details. */
 
 #pragma once
-#include "common/type_cast.h"
 #include "execution_defs.h"
 #include "execution_manager.h"
 #include "executor_abstract.h"
@@ -19,58 +18,32 @@ See the Mulan PSL v2 for more details. */
 class SortExecutor : public AbstractExecutor {
    private:
     std::unique_ptr<AbstractExecutor> prev_;
-    ColMeta sort_col_;                              // 排序列的元信息（单键排序）
+    ColMeta cols_;                              // 框架中只支持一个键排序，需要自行修改数据结构支持多个键排序
+    size_t tuple_num;
     bool is_desc_;
-    std::vector<std::unique_ptr<RmRecord>> buffered_;
-    size_t idx_ = 0;
+    std::vector<size_t> used_tuple;
+    std::unique_ptr<RmRecord> current_tuple;
 
    public:
     SortExecutor(std::unique_ptr<AbstractExecutor> prev, TabCol sel_cols, bool is_desc) {
         prev_ = std::move(prev);
-        sort_col_ = prev_->get_col_offset(sel_cols);
+        cols_ = prev_->get_col_offset(sel_cols);
         is_desc_ = is_desc;
+        tuple_num = 0;
+        used_tuple.clear();
     }
 
-    void beginTuple() override {
-        buffered_.clear();
-        idx_ = 0;
-        // 从子结点读取所有元组，放入 buffer
-        prev_->beginTuple();
-        while (!prev_->is_end()) {
-            auto rec = prev_->Next();
-            buffered_.push_back(std::move(rec));
-            prev_->nextTuple();
-        }
-        // 排序
-        std::sort(buffered_.begin(), buffered_.end(),
-                  [this](const std::unique_ptr<RmRecord> &a,
-                         const std::unique_ptr<RmRecord> &b) {
-                      const char *a_val = a->data + sort_col_.offset;
-                      const char *b_val = b->data + sort_col_.offset;
-                      int cmp = compare_value(a_val, b_val, sort_col_.type, sort_col_.len);
-                      return is_desc_ ? (cmp > 0) : (cmp < 0);
-                  });
+    void beginTuple() override { 
+        
     }
 
     void nextTuple() override {
-        if (idx_ < buffered_.size()) idx_++;
+        
     }
 
     std::unique_ptr<RmRecord> Next() override {
-        if (idx_ >= buffered_.size()) return nullptr;
-        return std::make_unique<RmRecord>(buffered_[idx_]->size, buffered_[idx_]->data);
+        return nullptr;
     }
 
     Rid &rid() override { return _abstract_rid; }
-
-    bool is_end() const override { return idx_ >= buffered_.size(); }
-
-    size_t tupleLen() const override { return prev_->tupleLen(); }
-
-    const std::vector<ColMeta> &cols() const override { return prev_->cols(); }
-
-   private:
-    static int compare_value(const char *a, const char *b, ColType type, int len) {
-        return TypeCaster::compare_raw(a, type, len, b, type, len);
-    }
 };

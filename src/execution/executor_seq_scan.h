@@ -10,7 +10,6 @@ See the Mulan PSL v2 for more details. */
 
 #pragma once
 
-#include "common/type_cast.h"
 #include "execution_defs.h"
 #include "execution_manager.h"
 #include "executor_abstract.h"
@@ -46,22 +45,89 @@ class SeqScanExecutor : public AbstractExecutor {
         fed_conds_ = conds_;
     }
 
+    // 比较两个值，返回比较结果：true 表示满足条件
+    bool eval_cond(const char *rec_data, const Condition &cond) {
+        // 获取 lhs 列的元数据
+        auto lhs_col = get_col(cols_, cond.lhs_col);
+        char *lhs_buf = const_cast<char *>(rec_data) + lhs_col->offset;
+
+        if (cond.is_rhs_val) {
+            // rhs 是常量值
+            char *rhs_buf = cond.rhs_val.raw->data;
+            return compare_value(lhs_buf, rhs_buf, lhs_col->type, cond.op, lhs_col->len);
+        } else {
+            // rhs 是列
+            auto rhs_col = get_col(cols_, cond.rhs_col);
+            char *rhs_buf = const_cast<char *>(rec_data) + rhs_col->offset;
+            return compare_value(lhs_buf, rhs_buf, lhs_col->type, cond.op, lhs_col->len);
+        }
+    }
+
+    // 比较两个原始值
+    bool compare_value(const char *lhs, const char *rhs, ColType type, CompOp op, int len = 0) {
+        int cmp_result = 0;
+        if (type == TYPE_INT) {
+            int l = *(int *)lhs;
+            int r = *(int *)rhs;
+            if (l < r) cmp_result = -1;
+            else if (l > r) cmp_result = 1;
+            else cmp_result = 0;
+        } else if (type == TYPE_FLOAT) {
+            float l = *(float *)lhs;
+            float r = *(float *)rhs;
+            if (l < r) cmp_result = -1;
+            else if (l > r) cmp_result = 1;
+            else cmp_result = 0;
+        } else if (type == TYPE_STRING) {
+            cmp_result = strncmp(lhs, rhs, len);
+        }
+        switch (op) {
+            case OP_EQ: return cmp_result == 0;
+            case OP_NE: return cmp_result != 0;
+            case OP_LT: return cmp_result < 0;
+            case OP_GT: return cmp_result > 0;
+            case OP_LE: return cmp_result <= 0;
+            case OP_GE: return cmp_result >= 0;
+            default: return false;
+        }
+    }
+
+    // 检查记录是否满足所有条件
+    bool is_satisfied(const char *rec_data) {
+        for (auto &cond : fed_conds_) {
+            if (!eval_cond(rec_data, cond)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     void beginTuple() override {
         scan_ = std::make_unique<RmScan>(fh_);
-        // RmScan() constructor already calls next(), so we're at first record.
-        // Advance to first record matching all conditions (if any).
-        advance_to_match();
+        // 跳过不满足条件的记录
+        while (!scan_->is_end()) {
+            auto rec = fh_->get_record(scan_->rid(), context_);
+            if (is_satisfied(rec->data)) {
+                rid_ = scan_->rid();
+                break;
+            }
+            scan_->next();
+        }
     }
 
     void nextTuple() override {
-        if (scan_->is_end()) return;
         scan_->next();
-        advance_to_match();
+        while (!scan_->is_end()) {
+            auto rec = fh_->get_record(scan_->rid(), context_);
+            if (is_satisfied(rec->data)) {
+                rid_ = scan_->rid();
+                break;
+            }
+            scan_->next();
+        }
     }
 
     std::unique_ptr<RmRecord> Next() override {
-        if (scan_->is_end()) return nullptr;
-        rid_ = scan_->rid();
         return fh_->get_record(rid_, context_);
     }
 
@@ -72,57 +138,4 @@ class SeqScanExecutor : public AbstractExecutor {
     size_t tupleLen() const override { return len_; }
 
     const std::vector<ColMeta> &cols() const override { return cols_; }
-
-   private:
-    /** @brief 从 scan_ 当前位置开始，推进到第一条满足 conds_ 条件的记录 */
-    void advance_to_match() {
-        while (!scan_->is_end()) {
-            if (conds_.empty()) break;   // 无条件 → 当前记录即有效
-            auto rec = fh_->get_record(scan_->rid(), context_);
-            if (eval_conds(rec->data, conds_, cols_)) break;
-            scan_->next();
-        }        if (!scan_->is_end()) {
-            rid_ = scan_->rid();
-        }    }
-
-    /** @brief 求值一组条件（AND 语义） */
-    static bool eval_conds(const char *rec_data, const std::vector<Condition> &conds,
-                           const std::vector<ColMeta> &cols) {
-        if (conds.empty()) return true;
-        for (auto &cond : conds) {
-            // 找到左值列
-            auto lhs_it = std::find_if(cols.begin(), cols.end(), [&](const ColMeta &c) {
-                return c.tab_name == cond.lhs_col.tab_name && c.name == cond.lhs_col.col_name;
-            });
-            if (lhs_it == cols.end()) return false;   // 列不存在 → 不匹配
-            ColType lhs_type = lhs_it->type;
-            int len = lhs_it->len;
-            const char *lhs_val = rec_data + lhs_it->offset;
-
-            // 获取右值
-            int cmp = 0;
-            if (cond.is_rhs_val) {
-                cmp = TypeCaster::compare_raw_with_value(lhs_val, lhs_type, len, cond.rhs_val);
-            } else {
-                // 右值也是列（列-列比较，仅在同一张表中支持）
-                auto rhs_it = std::find_if(cols.begin(), cols.end(), [&](const ColMeta &c) {
-                    return c.tab_name == cond.rhs_col.tab_name && c.name == cond.rhs_col.col_name;
-                });
-                if (rhs_it == cols.end()) return false;
-                cmp = TypeCaster::compare_raw(lhs_val, lhs_type, len,
-                                              rec_data + rhs_it->offset, rhs_it->type, rhs_it->len);
-            }
-            bool ok = false;
-            switch (cond.op) {
-                case OP_EQ: ok = (cmp == 0); break;
-                case OP_NE: ok = (cmp != 0); break;
-                case OP_LT: ok = (cmp <  0); break;
-                case OP_GT: ok = (cmp >  0); break;
-                case OP_LE: ok = (cmp <= 0); break;
-                case OP_GE: ok = (cmp >= 0); break;
-            }
-            if (!ok) return false;   // AND → 一个不满足就失败
-        }
-        return true;
-    }
 };

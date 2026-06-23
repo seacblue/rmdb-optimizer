@@ -9,7 +9,6 @@ MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 See the Mulan PSL v2 for more details. */
 
 #pragma once
-#include "common/type_cast.h"
 #include "execution_defs.h"
 #include "execution_manager.h"
 #include "executor_abstract.h"
@@ -44,35 +43,104 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
 
     }
 
+    // 比较两个原始值
+    bool compare_value(const char *lhs, const char *rhs, ColType type, CompOp op, int len = 0) {
+        int cmp_result = 0;
+        if (type == TYPE_INT) {
+            int l = *(int *)lhs;
+            int r = *(int *)rhs;
+            if (l < r) cmp_result = -1;
+            else if (l > r) cmp_result = 1;
+            else cmp_result = 0;
+        } else if (type == TYPE_FLOAT) {
+            float l = *(float *)lhs;
+            float r = *(float *)rhs;
+            if (l < r) cmp_result = -1;
+            else if (l > r) cmp_result = 1;
+            else cmp_result = 0;
+        } else if (type == TYPE_STRING) {
+            cmp_result = strncmp(lhs, rhs, len);
+        }
+        switch (op) {
+            case OP_EQ: return cmp_result == 0;
+            case OP_NE: return cmp_result != 0;
+            case OP_LT: return cmp_result < 0;
+            case OP_GT: return cmp_result > 0;
+            case OP_LE: return cmp_result <= 0;
+            case OP_GE: return cmp_result >= 0;
+            default: return false;
+        }
+    }
+
+    // 检查拼接后的记录是否满足所有 join 条件
+    bool is_satisfied(const char *rec_data) {
+        for (auto &cond : fed_conds_) {
+            auto lhs_col = get_col(cols_, cond.lhs_col);
+            char *lhs_buf = const_cast<char *>(rec_data) + lhs_col->offset;
+            
+            if (cond.is_rhs_val) {
+                char *rhs_buf = cond.rhs_val.raw->data;
+                if (!compare_value(lhs_buf, rhs_buf, lhs_col->type, cond.op, lhs_col->len)) {
+                    return false;
+                }
+            } else {
+                auto rhs_col = get_col(cols_, cond.rhs_col);
+                char *rhs_buf = const_cast<char *>(rec_data) + rhs_col->offset;
+                if (!compare_value(lhs_buf, rhs_buf, lhs_col->type, cond.op, lhs_col->len)) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
     void beginTuple() override {
         left_->beginTuple();
-        if (left_->is_end()) { isend = true; return; }
         right_->beginTuple();
-        if (right_->is_end()) { isend = true; return; }
+        // 当左右都不为空时，寻找第一个满足连接条件的记录对
         isend = false;
-        advance_to_match();
+        find_next_valid();
     }
 
     void nextTuple() override {
-        if (isend) return;
+        // 推进右表游标，然后继续寻找下一个满足条件的记录对
         right_->nextTuple();
-        if (right_->is_end()) {
+        find_next_valid();
+    }
+
+    // 找到下一个满足 join 条件的记录对，用于维持游标位置
+    void find_next_valid() {
+        while (!left_->is_end()) {
+            while (!right_->is_end()) {
+                // 检查当前左右记录对是否满足条件
+                auto left_rec = left_->Next();
+                auto right_rec = right_->Next();
+                std::unique_ptr<RmRecord> joined = std::make_unique<RmRecord>(len_);
+                memcpy(joined->data, left_rec->data, left_->tupleLen());
+                memcpy(joined->data + left_->tupleLen(), right_rec->data, right_->tupleLen());
+                
+                if (is_satisfied(joined->data)) {
+                    // 找到满足条件的记录对，保持游标位置，返回
+                    return;
+                }
+                right_->nextTuple();
+            }
+            // 右表遍历完，推进左表，重置右表
             left_->nextTuple();
-            if (left_->is_end()) { isend = true; return; }
             right_->beginTuple();
-            if (right_->is_end()) { isend = true; return; }
         }
-        advance_to_match();
+        // 左表也遍历完，结束
+        isend = true;
     }
 
     std::unique_ptr<RmRecord> Next() override {
-        if (isend) return nullptr;
+        // 返回当前游标位置的拼接记录
         auto left_rec = left_->Next();
         auto right_rec = right_->Next();
-        auto rec = std::make_unique<RmRecord>(len_);
-        memcpy(rec->data, left_rec->data, left_->tupleLen());
-        memcpy(rec->data + left_->tupleLen(), right_rec->data, right_->tupleLen());
-        return rec;
+        std::unique_ptr<RmRecord> joined = std::make_unique<RmRecord>(len_);
+        memcpy(joined->data, left_rec->data, left_->tupleLen());
+        memcpy(joined->data + left_->tupleLen(), right_rec->data, right_->tupleLen());
+        return joined;
     }
 
     Rid &rid() override { return _abstract_rid; }
@@ -82,70 +150,4 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
     size_t tupleLen() const override { return len_; }
 
     const std::vector<ColMeta> &cols() const override { return cols_; }
-
-   private:
-    /** @brief 推进到下一对满足 join 条件的 (left,right) 组合 */
-    void advance_to_match() {
-        while (!left_->is_end() && !right_->is_end()) {
-            if (fed_conds_.empty()) return;   // 无条件 → 当前对有效
-
-            // 拼接当前左右记录
-            auto left_rec = left_->Next();
-            auto right_rec = right_->Next();
-            auto rec = std::make_unique<RmRecord>(len_);
-            memcpy(rec->data, left_rec->data, left_->tupleLen());
-            memcpy(rec->data + left_->tupleLen(), right_rec->data, right_->tupleLen());
-
-            if (eval_join_conds(rec->data, fed_conds_, cols_)) return;
-
-            // 不匹配 → 推进右表
-            right_->nextTuple();
-            if (right_->is_end()) {
-                left_->nextTuple();
-                if (left_->is_end()) { isend = true; return; }
-                right_->beginTuple();
-            }
-        }
-        isend = true;
-    }
-
-    /** @brief 求值一组连接条件（AND 语义） */
-    static bool eval_join_conds(const char *rec_data, const std::vector<Condition> &conds,
-                                const std::vector<ColMeta> &cols) {
-        if (conds.empty()) return true;
-        for (auto &cond : conds) {
-            auto lhs_it = std::find_if(cols.begin(), cols.end(), [&](const ColMeta &c) {
-                return c.tab_name == cond.lhs_col.tab_name && c.name == cond.lhs_col.col_name;
-            });
-            if (lhs_it == cols.end()) return false;
-
-            ColType lhs_type = lhs_it->type;
-            int len = lhs_it->len;
-            const char *lhs_val = rec_data + lhs_it->offset;
-
-            int cmp = 0;
-            if (cond.is_rhs_val) {
-                cmp = TypeCaster::compare_raw_with_value(lhs_val, lhs_type, len, cond.rhs_val);
-            } else {
-                auto rhs_it = std::find_if(cols.begin(), cols.end(), [&](const ColMeta &c) {
-                    return c.tab_name == cond.rhs_col.tab_name && c.name == cond.rhs_col.col_name;
-                });
-                if (rhs_it == cols.end()) return false;
-                cmp = TypeCaster::compare_raw(lhs_val, lhs_type, len,
-                                              rec_data + rhs_it->offset, rhs_it->type, rhs_it->len);
-            }
-
-            bool ok = false;
-            switch (cond.op) {
-                case OP_EQ: ok = (cmp == 0); break;
-                case OP_NE: ok = (cmp != 0); break;
-                case OP_LT: ok = (cmp <  0); break;
-                case OP_GT: ok = (cmp >  0); break;
-                case OP_LE: ok = (cmp <= 0); break;
-                case OP_GE: ok = (cmp >= 0); break;
-            }
-            if (!ok) return false;
-        }
-        return true;
-    }
 };
