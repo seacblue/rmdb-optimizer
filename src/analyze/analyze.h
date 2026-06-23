@@ -21,6 +21,7 @@ See the Mulan PSL v2 for more details. */
 #include "parser/parser.h"
 #include "system/sm.h"
 #include "common/common.h"
+#include "common/type_cast.h"
 
 class Query{
     public:
@@ -59,6 +60,7 @@ private:
     void get_clause(const std::vector<std::shared_ptr<ast::BinaryExpr>> &sv_conds, std::vector<Condition> &conds);
     void check_clause(const std::vector<std::string> &tab_names, std::vector<Condition> &conds);
     Value convert_sv_value(const std::shared_ptr<ast::Value> &sv_val);
+    Value eval_constant_expr(const std::shared_ptr<ast::Expr> &expr);
     CompOp convert_sv_comp_op(ast::SvCompOp op);
     ColType resolve_expr_type(const std::shared_ptr<ast::Expr> &expr, const std::vector<ColMeta> &all_cols);
 };
@@ -77,24 +79,13 @@ inline Value eval_set_expr(const std::shared_ptr<ast::Expr>& expr,
             throw ColumnNotFoundError(qualified_name);
         }
         const auto &meta = cols[it->second];
-        Value val;
-        const char *buf = record_buf + meta.offset;
-        if (meta.type == TYPE_INT) {
-            val.set_int(*reinterpret_cast<const int *>(buf));
-        } else if (meta.type == TYPE_FLOAT) {
-            val.set_float(*reinterpret_cast<const float *>(buf));
-        } else {
-            val.set_str(std::string(buf, strnlen(buf, meta.len)));
-        }
-        return val;
+        return TypeCaster::read_raw_value(record_buf + meta.offset, meta.type, meta.len);
     };
 
     std::function<Value(const std::shared_ptr<ast::Expr>&)> eval_impl =
         [&](const std::shared_ptr<ast::Expr>& node) -> Value {
         if (auto int_lit = std::dynamic_pointer_cast<ast::IntLit>(node)) {
-            Value val;
-            val.set_int(int_lit->val);
-            return val;
+            return TypeCaster::parse_integer_literal(int_lit->val);
         }
         if (auto float_lit = std::dynamic_pointer_cast<ast::FloatLit>(node)) {
             Value val;
@@ -111,57 +102,29 @@ inline Value eval_set_expr(const std::shared_ptr<ast::Expr>& expr,
         }
         if (auto unary = std::dynamic_pointer_cast<ast::UnaryExpr>(node)) {
             Value rhs = eval_impl(unary->rhs);
-            if (rhs.type == TYPE_STRING) {
+            if (!TypeCaster::is_numeric(rhs.type)) {
                 throw IncompatibleTypeError(coltype2str(rhs.type), "NUMERIC");
             }
-            if (rhs.type == TYPE_FLOAT) {
-                rhs.set_float(-rhs.float_val);
-            } else {
-                rhs.set_int(-rhs.int_val);
-            }
-            return rhs;
+            return TypeCaster::negate_value(rhs);
         }
         if (auto arith = std::dynamic_pointer_cast<ast::ArithExpr>(node)) {
             Value lhs = eval_impl(arith->lhs);
             Value rhs = eval_impl(arith->rhs);
-            if (lhs.type == TYPE_STRING || rhs.type == TYPE_STRING) {
+            if (!TypeCaster::is_numeric(lhs.type) || !TypeCaster::is_numeric(rhs.type)) {
                 throw IncompatibleTypeError(coltype2str(lhs.type), coltype2str(rhs.type));
             }
-
-            bool use_float = lhs.type == TYPE_FLOAT || rhs.type == TYPE_FLOAT;
-            auto lhs_num = use_float ? static_cast<double>(lhs.type == TYPE_FLOAT ? lhs.float_val : lhs.int_val)
-                                     : static_cast<double>(lhs.int_val);
-            auto rhs_num = use_float ? static_cast<double>(rhs.type == TYPE_FLOAT ? rhs.float_val : rhs.int_val)
-                                     : static_cast<double>(rhs.int_val);
-
-            Value result;
-            if ((arith->op == ast::SV_OP_DIV) && rhs_num == 0.0) {
-                throw InternalError("Division by zero in update expression");
+            switch (arith->op) {
+                case ast::SV_OP_ADD:
+                    return TypeCaster::apply_arithmetic(lhs, rhs, '+');
+                case ast::SV_OP_SUB:
+                    return TypeCaster::apply_arithmetic(lhs, rhs, '-');
+                case ast::SV_OP_MUL:
+                    return TypeCaster::apply_arithmetic(lhs, rhs, '*');
+                case ast::SV_OP_DIV:
+                    return TypeCaster::apply_arithmetic(lhs, rhs, '/');
+                default:
+                    throw InternalError("Unexpected arithmetic operator");
             }
-            if (use_float) {
-                double output = 0.0;
-                switch (arith->op) {
-                    case ast::SV_OP_ADD: output = lhs_num + rhs_num; break;
-                    case ast::SV_OP_SUB: output = lhs_num - rhs_num; break;
-                    case ast::SV_OP_MUL: output = lhs_num * rhs_num; break;
-                    case ast::SV_OP_DIV: output = lhs_num / rhs_num; break;
-                    default: throw InternalError("Unexpected arithmetic operator");
-                }
-                result.set_float(static_cast<float>(output));
-            } else {
-                int lhs_int = lhs.int_val;
-                int rhs_int = rhs.int_val;
-                int output = 0;
-                switch (arith->op) {
-                    case ast::SV_OP_ADD: output = lhs_int + rhs_int; break;
-                    case ast::SV_OP_SUB: output = lhs_int - rhs_int; break;
-                    case ast::SV_OP_MUL: output = lhs_int * rhs_int; break;
-                    case ast::SV_OP_DIV: output = lhs_int / rhs_int; break;
-                    default: throw InternalError("Unexpected arithmetic operator");
-                }
-                result.set_int(output);
-            }
-            return result;
         }
         throw InternalError("Unsupported update expression");
     };

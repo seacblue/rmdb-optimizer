@@ -14,10 +14,36 @@ See the Mulan PSL v2 for more details. */
 #include <unistd.h>
 
 #include <fstream>
+#include <unordered_set>
 
 #include "index/ix.h"
 #include "record/rm.h"
 #include "record_printer.h"
+
+namespace {
+
+std::string format_output_row(const std::vector<std::string> &columns) {
+    std::string out = "|";
+    for (const auto &column : columns) {
+        out += " " + column + " |";
+    }
+    out += "\n";
+    return out;
+}
+
+void append_context_output(Context *context, const std::string &text) {
+    if (context == nullptr || context->data_send_ == nullptr || context->offset_ == nullptr) {
+        return;
+    }
+    if (context->ellipsis_ == false && *context->offset_ + static_cast<int>(text.size()) + RECORD_COUNT_LENGTH < BUFFER_LENGTH) {
+        memcpy(context->data_send_ + *(context->offset_), text.c_str(), text.size());
+        *(context->offset_) += static_cast<int>(text.size());
+    } else {
+        context->ellipsis_ = true;
+    }
+}
+
+}  // namespace
 
 /**
  * @description: 判断是否为一个文件夹
@@ -160,11 +186,11 @@ void SmManager::flush_meta() {
  */
 void SmManager::show_tables(Context* context) {
     std::unique_ptr<std::fstream> outfile;
+    RecordPrinter printer(1);
     if (g_output_file_on.load()) {
         outfile = std::make_unique<std::fstream>("output.txt", std::ios::out | std::ios::app);
-        *outfile << "| Tables |\n";
+        *outfile << format_output_row({"Tables"});
     }
-    RecordPrinter printer(1);
     printer.print_separator(context);
     printer.print_record({"Tables"}, context);
     printer.print_separator(context);
@@ -172,10 +198,45 @@ void SmManager::show_tables(Context* context) {
         auto &tab = entry.second;
         printer.print_record({tab.name}, context);
         if (outfile != nullptr) {
-            *outfile << "| " << tab.name << " |\n";
+            *outfile << format_output_row({tab.name});
         }
     }
     printer.print_separator(context);
+    if (outfile != nullptr) {
+        *outfile << "\n";
+    }
+}
+
+void SmManager::show_index(const std::string& tab_name, Context* context) {
+    TabMeta &tab = db_.get_table(tab_name);
+    if (tab.indexes.empty()) {
+        return;
+    }
+
+    std::unique_ptr<std::fstream> outfile;
+    if (g_output_file_on.load()) {
+        outfile = std::make_unique<std::fstream>("output.txt", std::ios::out | std::ios::app);
+    }
+
+    for (const auto &index : tab.indexes) {
+        std::string cols = "(";
+        for (size_t i = 0; i < index.cols.size(); ++i) {
+            if (i > 0) {
+                cols += ",";
+            }
+            cols += index.cols[i].name;
+        }
+        cols += ")";
+        std::string line = format_output_row({tab.name, "unique", cols});
+        append_context_output(context, line);
+        if (outfile != nullptr) {
+            *outfile << line;
+        }
+    }
+    append_context_output(context, "\n");
+    if (outfile != nullptr) {
+        *outfile << "\n";
+    }
 }
 
 /**
@@ -188,6 +249,11 @@ void SmManager::desc_table(const std::string& tab_name, Context* context) {
 
     std::vector<std::string> captions = {"Field", "Type", "Index"};
     RecordPrinter printer(captions.size());
+    std::unique_ptr<std::fstream> outfile;
+    if (g_output_file_on.load()) {
+        outfile = std::make_unique<std::fstream>("output.txt", std::ios::out | std::ios::app);
+        *outfile << format_output_row(captions);
+    }
     // Print header
     printer.print_separator(context);
     printer.print_record(captions, context);
@@ -196,9 +262,15 @@ void SmManager::desc_table(const std::string& tab_name, Context* context) {
     for (auto &col : tab.cols) {
         std::vector<std::string> field_info = {col.name, coltype2str(col.type), col.index ? "YES" : "NO"};
         printer.print_record(field_info, context);
+        if (outfile != nullptr) {
+            *outfile << format_output_row(field_info);
+        }
     }
     // Print footer
     printer.print_separator(context);
+    if (outfile != nullptr) {
+        *outfile << "\n";
+    }
 }
 
 /**
@@ -305,6 +377,7 @@ void SmManager::create_index(const std::string& tab_name, const std::vector<std:
     //       待 B+ 树实现后方可真正插入已有数据
     RmFileHandle *fh = fhs_.at(tab_name).get();
     RmScan scan(fh);
+    std::unordered_set<std::string> seen_keys;
     while (!scan.is_end()) {
         Rid rid = {.page_no = scan.rid().page_no, .slot_no = scan.rid().slot_no};
         auto rec = fh->get_record(rid, context);
@@ -315,6 +388,13 @@ void SmManager::create_index(const std::string& tab_name, const std::vector<std:
             memcpy(key_buf.get() + offset, rec->data + col.offset, col.len);
             offset += col.len;
         }
+        std::string key_str(key_buf.get(), key_buf.get() + index_col_tot_len);
+        if (seen_keys.find(key_str) != seen_keys.end()) {
+            ix_manager_->close_index(ih.get());
+            ix_manager_->destroy_index(tab_name, index_cols);
+            throw UniqueConstraintError(ix_name);
+        }
+        seen_keys.insert(key_str);
         ih->insert_entry(key_buf.get(), rid, nullptr);
         scan.next();
     }
@@ -391,15 +471,6 @@ void SmManager::drop_index(const std::string& tab_name, const std::vector<ColMet
     // 删除索引文件
     ix_manager_->destroy_index(tab_name, cols);
 
-    // 更新列元数据的 index 标记
-    for (auto &col : tab.cols) {
-        for (auto &ic : cols) {
-            if (col.name == ic.name) {
-                col.index = false;
-            }
-        }
-    }
-
     // 从表元数据中移除索引记录
     auto &indexes = tab.indexes;
     for (auto it = indexes.begin(); it != indexes.end(); ++it) {
@@ -416,6 +487,23 @@ void SmManager::drop_index(const std::string& tab_name, const std::vector<ColMet
                 break;
             }
         }
+    }
+
+    // 更新列元数据的 index 标记
+    for (auto &col : tab.cols) {
+        bool still_indexed = false;
+        for (const auto &index : tab.indexes) {
+            for (const auto &idx_col : index.cols) {
+                if (idx_col.name == col.name) {
+                    still_indexed = true;
+                    break;
+                }
+            }
+            if (still_indexed) {
+                break;
+            }
+        }
+        col.index = still_indexed;
     }
 
     flush_meta();

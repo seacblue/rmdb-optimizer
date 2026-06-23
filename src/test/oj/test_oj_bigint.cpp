@@ -288,7 +288,29 @@ TEST_F(BigIntTest, BigIntBoundaryValues) {
 }
 
 // ============================================================
-// 用例 6: BIGINT WHERE 条件（实际比较过滤）
+// 用例 6: 超范围 BIGINT 字面量应失败，且不污染已有数据
+// ============================================================
+TEST_F(BigIntTest, RejectOutOfRangeBigIntLiteral) {
+    expect_success(sql_helper_.execute_sql("CREATE TABLE test_bigint (bid BIGINT, sid INT);"));
+    expect_success(sql_helper_.execute_sql(
+        "INSERT INTO test_bigint VALUES (372036854775807, 233421);"));
+    expect_success(sql_helper_.execute_sql(
+        "INSERT INTO test_bigint VALUES (-922337203685477580, 124332);"));
+
+    expect_error(sql_helper_.execute_sql(
+        "INSERT INTO test_bigint VALUES (9223372036854775808, 12345);"));
+    expect_error(sql_helper_.execute_sql(
+        "INSERT INTO test_bigint VALUES (-9223372036854775809, 12345);"));
+
+    std::string res = sql_helper_.execute_sql("SELECT * FROM test_bigint;");
+    expect_output_contains(res, "372036854775807");
+    expect_output_contains(res, "233421");
+    expect_output_contains(res, "124332");
+    expect_total_records(res, 2);
+}
+
+// ============================================================
+// 用例 7: BIGINT WHERE 条件（实际比较过滤）
 // ============================================================
 TEST_F(BigIntTest, BigIntWhereClause) {
     expect_success(sql_helper_.execute_sql("CREATE TABLE test_bigint (bid BIGINT, val INT);"));
@@ -322,7 +344,31 @@ TEST_F(BigIntTest, BigIntWhereClause) {
 }
 
 // ============================================================
-// 用例 7: 空表扫描
+// 用例 8: BIGINT 增删改查完整路径
+// ============================================================
+TEST_F(BigIntTest, BigIntUpdateAndDelete) {
+    expect_success(sql_helper_.execute_sql("CREATE TABLE test_bigint (bid BIGINT, sid INT);"));
+    expect_success(sql_helper_.execute_sql(
+        "INSERT INTO test_bigint VALUES (922337203685477580, 10);"));
+    expect_success(sql_helper_.execute_sql(
+        "INSERT INTO test_bigint VALUES (-100, 20);"));
+
+    expect_success(sql_helper_.execute_sql(
+        "UPDATE test_bigint SET sid = 30 WHERE bid = 922337203685477580;"));
+    std::string res = sql_helper_.execute_sql(
+        "SELECT * FROM test_bigint WHERE sid = 30;");
+    expect_total_records(res, 1);
+    expect_output_contains(res, "30");
+
+    expect_success(sql_helper_.execute_sql(
+        "DELETE FROM test_bigint WHERE bid = -100;"));
+    res = sql_helper_.execute_sql("SELECT * FROM test_bigint;");
+    expect_total_records(res, 1);
+    expect_output_contains(res, "30");
+}
+
+// ============================================================
+// 用例 9: 空表扫描
 // ============================================================
 TEST_F(BigIntTest, EmptyTable) {
     expect_success(sql_helper_.execute_sql("CREATE TABLE test_bigint (bid BIGINT, sid INT);"));

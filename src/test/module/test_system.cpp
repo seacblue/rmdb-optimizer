@@ -31,7 +31,9 @@ See the Mulan PSL v2 for more details.
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <fstream>
 #include <memory>
+#include <sstream>
 #include <string>
 
 #include "index/ix.h"
@@ -217,6 +219,12 @@ TEST_F(SmManagerTest, ShowTables) {
 
     // show_tables 打印到 RecordPrinter + output.txt
     EXPECT_NO_THROW(sm_manager_->show_tables(test_ctx_.ctx.get()));
+
+    std::ifstream ifs("output.txt");
+    ASSERT_TRUE(ifs.is_open());
+    std::stringstream ss;
+    ss << ifs.rdbuf();
+    EXPECT_EQ(ss.str(), "| Tables |\n| tab_a |\n| tab_b |\n\n");
 
     sm_manager_->close_db();
 }

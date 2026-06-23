@@ -34,7 +34,9 @@ See the Mulan PSL v2 for more details. */
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -1439,4 +1441,44 @@ TEST_F(ExecutorTest, SelectFromAllTypes) {
                             make_tabcol("all_types", "c_float"),
                             make_tabcol("all_types", "c_str")}, &ctx);
     EXPECT_GT(offset, 0);
+}
+
+// ============================================================
+// 32. select_from --- output.txt uses simplified task-statement format
+// ============================================================
+TEST_F(ExecutorTest, SelectFromWritesFormattedOutputFile) {
+    std::vector<ColDef> col_defs;
+    col_defs.push_back({"id", TYPE_INT, 4});
+    sm_manager_->create_table("out_fmt", col_defs, context_);
+
+    {
+        Value v; v.set_int(7);
+        auto ins = std::make_unique<InsertExecutor>(sm_manager_, "out_fmt",
+            std::vector<Value>{v}, context_);
+        ins->Next();
+    }
+
+    if (disk_manager_->is_file("output.txt")) {
+        disk_manager_->destroy_file("output.txt");
+    }
+    g_output_file_on.store(true);
+
+    QlManager ql_mgr(sm_manager_, nullptr);
+    char data_buf[4096] = {};
+    int offset = 0;
+    Context ctx(nullptr, nullptr, nullptr, data_buf, &offset);
+
+    auto seq = std::make_unique<SeqScanExecutor>(sm_manager_, "out_fmt",
+                                                 std::vector<Condition>{}, context_);
+    auto proj = std::make_unique<ProjectionExecutor>(std::move(seq),
+        std::vector<TabCol>{make_tabcol("out_fmt", "id")});
+
+    ql_mgr.select_from(std::move(proj),
+        std::vector<TabCol>{make_tabcol("out_fmt", "id")}, &ctx);
+
+    std::ifstream ifs("output.txt");
+    ASSERT_TRUE(ifs.is_open());
+    std::stringstream ss;
+    ss << ifs.rdbuf();
+    EXPECT_EQ(ss.str(), "| id |\n| 7 |\n\n");
 }

@@ -15,6 +15,7 @@ See the Mulan PSL v2 for more details. */
 #include <string>
 #include <vector>
 
+#include "common/type_cast.h"
 #include "execution_defs.h"
 #include "executor_abstract.h"
 #include "index/ix.h"
@@ -83,19 +84,19 @@ class LoadExecutor : public AbstractExecutor {
                 std::vector<char> record_buf(record_size, 0);
                 for (size_t i = 0; i < fields.size(); ++i) {
                     const auto &col = ordered_cols[i];
-                    char *dst = record_buf.data() + col.offset;
-                    if (col.type == TYPE_INT) {
-                        int value = std::stoi(fields[i]);
-                        memcpy(dst, &value, sizeof(int));
-                    } else if (col.type == TYPE_FLOAT) {
-                        float value = std::stof(fields[i]);
-                        memcpy(dst, &value, sizeof(float));
+                    Value value;
+                    if (col.type == TYPE_FLOAT) {
+                        value.set_float(std::stof(fields[i]));
+                    } else if (col.type == TYPE_STRING) {
+                        value.set_str(fields[i]);
                     } else {
-                        if (static_cast<int>(fields[i].size()) > col.len) {
-                            throw StringOverflowError();
-                        }
-                        memcpy(dst, fields[i].data(), fields[i].size());
+                        value.set_str(fields[i]);
                     }
+                    value = (col.type == TYPE_INT || col.type == TYPE_BIGINT)
+                                ? TypeCaster::cast_value(TypeCaster::parse_integer_literal(fields[i]), col.type, col.len)
+                                : TypeCaster::cast_value(value, col.type, col.len);
+                    value.init_raw(col.len);
+                    memcpy(record_buf.data() + col.offset, value.raw->data, col.len);
                 }
 
                 Rid rid = fh->insert_record(record_buf.data(), nullptr);

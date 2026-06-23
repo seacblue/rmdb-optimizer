@@ -10,7 +10,9 @@ See the Mulan PSL v2 for more details. */
 
 #pragma once
 #include <unordered_map>
+#include <unordered_set>
 #include "analyze/analyze.h"
+#include "common/type_cast.h"
 #include "execution_defs.h"
 #include "execution_manager.h"
 #include "executor_abstract.h"
@@ -47,57 +49,86 @@ class UpdateExecutor : public AbstractExecutor {
             col_offset[tab_.cols[i].tab_name + "." + tab_.cols[i].name] = i;
         }
 
+        struct PreparedUpdate {
+            Rid rid;
+            std::unique_ptr<RmRecord> old_rec;
+            std::unique_ptr<RmRecord> new_rec;
+            std::vector<std::string> old_keys;
+            std::vector<std::string> new_keys;
+        };
+
+        std::vector<PreparedUpdate> prepared;
+        prepared.reserve(rids_.size());
+        std::vector<std::unordered_set<std::string>> seen_new_keys(tab_.indexes.size());
+
         for (auto &rid : rids_) {
-            // 读取当前记录
-            auto rec = fh_->get_record(rid, context_);
+            PreparedUpdate item;
+            item.rid = rid;
+            item.old_rec = fh_->get_record(rid, context_);
+            item.new_rec = std::make_unique<RmRecord>(*item.old_rec);
 
-            // 删除旧的索引项
-            for (size_t j = 0; j < tab_.indexes.size(); ++j) {
-                auto &index = tab_.indexes[j];
-                auto ih = sm_manager_->ihs_.at(
-                    sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
-
-                auto old_key = std::make_unique<char[]>(index.col_tot_len);
-                int offset = 0;
-                for (size_t k = 0; k < (size_t)index.col_num; ++k) {
-                    memcpy(old_key.get() + offset, rec->data + index.cols[k].offset, index.cols[k].len);
-                    offset += index.cols[k].len;
-                }
-                ih->delete_entry(old_key.get(), context_->txn_);
-            }
-
-            // 应用 SET 子句
             for (auto &clause : set_clauses_) {
                 auto it = get_col(tab_.cols, clause.lhs);
                 Value rhs_value = clause.rhs_expr != nullptr
-                    ? eval_set_expr(clause.rhs_expr, rec->data, tab_.cols, col_offset)
+                    ? eval_set_expr(clause.rhs_expr, item.new_rec->data, tab_.cols, col_offset)
                     : clause.rhs;
-                if (it->type == TYPE_FLOAT && rhs_value.type == TYPE_INT) {
-                    rhs_value.set_float(static_cast<float>(rhs_value.int_val));
-                } else if (it->type == TYPE_INT && rhs_value.type == TYPE_FLOAT) {
-                    rhs_value.set_int(static_cast<int>(rhs_value.float_val));
-                }
+                rhs_value = TypeCaster::cast_value(rhs_value, it->type, it->len);
                 rhs_value.init_raw(it->len);
-                memcpy(rec->data + it->offset, rhs_value.raw->data, it->len);
+                memcpy(item.new_rec->data + it->offset, rhs_value.raw->data, it->len);
             }
 
-            // 插入新的索引项
             for (size_t j = 0; j < tab_.indexes.size(); ++j) {
                 auto &index = tab_.indexes[j];
                 auto ih = sm_manager_->ihs_.at(
                     sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
 
-                auto new_key = std::make_unique<char[]>(index.col_tot_len);
-                int offset = 0;
+                std::string old_key;
+                std::string new_key;
+                old_key.reserve(index.col_tot_len);
+                new_key.reserve(index.col_tot_len);
                 for (size_t k = 0; k < (size_t)index.col_num; ++k) {
-                    memcpy(new_key.get() + offset, rec->data + index.cols[k].offset, index.cols[k].len);
-                    offset += index.cols[k].len;
+                    old_key.append(item.old_rec->data + index.cols[k].offset, index.cols[k].len);
+                    new_key.append(item.new_rec->data + index.cols[k].offset, index.cols[k].len);
                 }
-                ih->insert_entry(new_key.get(), rid, context_->txn_);
+                item.old_keys.push_back(old_key);
+                item.new_keys.push_back(new_key);
+
+                if (old_key != new_key) {
+                    if (!seen_new_keys[j].insert(new_key).second) {
+                        throw UniqueConstraintError(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols));
+                    }
+                    std::vector<Rid> result;
+                    if (ih->get_value(new_key.data(), &result, context_->txn_)) {
+                        throw UniqueConstraintError(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols));
+                    }
+                }
             }
 
-            // 写回
-            fh_->update_record(rid, rec->data, context_);
+            prepared.push_back(std::move(item));
+        }
+
+        for (auto &item : prepared) {
+            for (size_t j = 0; j < tab_.indexes.size(); ++j) {
+                auto &index = tab_.indexes[j];
+                auto ih = sm_manager_->ihs_.at(
+                    sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
+
+                if (item.old_keys[j] != item.new_keys[j]) {
+                    ih->delete_entry(item.old_keys[j].data(), context_->txn_);
+                }
+            }
+
+            for (size_t j = 0; j < tab_.indexes.size(); ++j) {
+                auto &index = tab_.indexes[j];
+                auto ih = sm_manager_->ihs_.at(
+                    sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
+
+                if (item.old_keys[j] != item.new_keys[j]) {
+                    ih->insert_entry(item.new_keys[j].data(), item.rid, context_->txn_);
+                }
+            }
+
+            fh_->update_record(item.rid, item.new_rec->data, context_);
         }
         return nullptr;
     }

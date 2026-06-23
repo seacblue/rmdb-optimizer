@@ -17,8 +17,22 @@ See the Mulan PSL v2 for more details. */
 #include "executor_projection.h"
 #include "executor_seq_scan.h"
 #include "executor_update.h"
+#include "common/type_cast.h"
 #include "index/ix.h"
 #include "record_printer.h"
+
+namespace {
+
+std::string format_output_row(const std::vector<std::string> &columns) {
+    std::string out = "|";
+    for (const auto &column : columns) {
+        out += " " + column + " |";
+    }
+    out += "\n";
+    return out;
+}
+
+}  // namespace
 
 const char *help_info = "Supported SQL syntax:\n"
                    "  command ;\n"
@@ -27,13 +41,14 @@ const char *help_info = "Supported SQL syntax:\n"
                    "  DROP TABLE table_name\n"
                    "  CREATE INDEX table_name (column_name)\n"
                    "  DROP INDEX table_name (column_name)\n"
+                   "  SHOW INDEX FROM table_name\n"
                    "  INSERT INTO table_name VALUES (value [, value ...])\n"
                    "  DELETE FROM table_name [WHERE where_clause]\n"
                    "  UPDATE table_name SET column_name = value [, column_name = value ...] [WHERE where_clause]\n"
                    "  SELECT selector FROM table_name [WHERE where_clause]\n"
                    "  set output_file {on|off}\n"
                    "type:\n"
-                   "  {INT | FLOAT | CHAR(n)}\n"
+                   "  {INT | BIGINT | FLOAT | CHAR(n) | DATETIME}\n"
                    "where_clause:\n"
                    "  condition [AND condition ...]\n"
                    "condition:\n"
@@ -91,6 +106,11 @@ void QlManager::run_cmd_utility(std::shared_ptr<Plan> plan, txn_id_t *txn_id, Co
                 sm_manager_->show_tables(context);
                 break;
             }
+            case T_ShowIndex:
+            {
+                sm_manager_->show_index(x->tab_name_, context);
+                break;
+            }
             case T_DescTable:
             {
                 sm_manager_->desc_table(x->tab_name_, context);
@@ -146,11 +166,7 @@ void QlManager::select_from(std::unique_ptr<AbstractExecutor> executorTreeRoot, 
     std::unique_ptr<std::fstream> outfile;
     if (g_output_file_on.load()) {
         outfile = std::make_unique<std::fstream>("output.txt", std::ios::out | std::ios::app);
-        *outfile << "|";
-        for(int i = 0; i < captions.size(); ++i) {
-            *outfile << " " << captions[i] << " |";
-        }
-        *outfile << "\n";
+        *outfile << format_output_row(captions);
     }
 
     // Print records
@@ -160,31 +176,13 @@ void QlManager::select_from(std::unique_ptr<AbstractExecutor> executorTreeRoot, 
         auto Tuple = executorTreeRoot->Next();
         std::vector<std::string> columns;
         for (auto &col : executorTreeRoot->cols()) {
-            std::string col_str;
-            char *rec_buf = Tuple->data + col.offset;
-            if (col.type == TYPE_INT) {
-                col_str = std::to_string(*(int *)rec_buf);
-            } else if (col.type == TYPE_BIGINT) {
-                col_str = std::to_string(*(int64_t *)rec_buf);
-            } else if (col.type == TYPE_DATETIME) {
-                col_str = int64_to_datetime_str(*(int64_t *)rec_buf);
-            } else if (col.type == TYPE_FLOAT) {
-                col_str = std::to_string(*(float *)rec_buf);
-            } else if (col.type == TYPE_STRING) {
-                col_str = std::string((char *)rec_buf, col.len);
-                col_str.resize(strlen(col_str.c_str()));
-            }
-            columns.push_back(col_str);
+            columns.push_back(TypeCaster::format_raw_value(Tuple->data + col.offset, col.type, col.len));
         }
         // print record into buffer
         rec_printer.print_record(columns, context);
         // print record into file
         if (outfile != nullptr) {
-            *outfile << "|";
-            for(int i = 0; i < columns.size(); ++i) {
-                *outfile << " " << columns[i] << " |";
-            }
-            *outfile << "\n";
+            *outfile << format_output_row(columns);
         }
         num_rec++;
     }
@@ -192,6 +190,9 @@ void QlManager::select_from(std::unique_ptr<AbstractExecutor> executorTreeRoot, 
     rec_printer.print_separator(context);
     // Print record count into buffer
     RecordPrinter::print_record_count(num_rec, context);
+    if (outfile != nullptr) {
+        *outfile << "\n";
+    }
 }
 
 // 执行DML语句

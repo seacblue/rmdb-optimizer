@@ -9,6 +9,7 @@ MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 See the Mulan PSL v2 for more details. */
 
 #pragma once
+#include "common/type_cast.h"
 #include "execution_defs.h"
 #include "execution_manager.h"
 #include "executor_abstract.h"
@@ -70,15 +71,6 @@ class SortExecutor : public AbstractExecutor {
 
    private:
     static int compare_value(const char *a, const char *b, ColType type, int len) {
-        if (type == TYPE_INT) {
-            int ia = *(const int *)a, ib = *(const int *)b;
-            return (ia < ib) ? -1 : (ia > ib) ? 1 : 0;
-        }
-        if (type == TYPE_FLOAT) {
-            float fa = *(const float *)a, fb = *(const float *)b;
-            if (fabs(fa - fb) < 1e-9) return 0;
-            return (fa < fb) ? -1 : 1;
-        }
-        return strncmp(a, b, len);
+        return TypeCaster::compare_raw(a, type, len, b, type, len);
     }
 };

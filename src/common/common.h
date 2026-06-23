@@ -11,12 +11,14 @@ See the Mulan PSL v2 for more details. */
 #pragma once
 
 #include <cassert>
+#include <cstdint>
 #include <cstring>
 #include <memory>
 #include <string>
 #include <vector>
 #include "defs.h"
 #include "datetime_utils.h"
+#include "errors.h"
 #include "record/rm_defs.h"
 
 namespace ast {
@@ -71,7 +73,6 @@ struct Value {
     }
 
     void init_raw(int len) {
-        assert(raw == nullptr);
         raw = std::make_shared<RmRecord>(len);
         if (type == TYPE_INT) {
             assert(len == sizeof(int));
