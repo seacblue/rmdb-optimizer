@@ -1480,5 +1480,5 @@ TEST_F(ExecutorTest, SelectFromWritesFormattedOutputFile) {
     ASSERT_TRUE(ifs.is_open());
     std::stringstream ss;
     ss << ifs.rdbuf();
-    EXPECT_EQ(ss.str(), "| id |\n| 7 |\n\n");
+    EXPECT_EQ(ss.str(), "| id |\n| 7 |\n");
 }
