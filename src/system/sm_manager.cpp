@@ -188,7 +188,7 @@ void SmManager::show_tables(Context* context) {
     std::unique_ptr<std::fstream> outfile;
     RecordPrinter printer(1);
     if (g_output_file_on.load()) {
-        outfile = std::make_unique<std::fstream>("output.txt", std::ios::out | std::ios::app);
+        outfile = std::make_unique<std::fstream>(g_output_file_path, std::ios::out | std::ios::app);
         *outfile << format_output_row({"Tables"});
     }
     printer.print_separator(context);
@@ -212,7 +212,7 @@ void SmManager::show_index(const std::string& tab_name, Context* context) {
 
     std::unique_ptr<std::fstream> outfile;
     if (g_output_file_on.load()) {
-        outfile = std::make_unique<std::fstream>("output.txt", std::ios::out | std::ios::app);
+        outfile = std::make_unique<std::fstream>(g_output_file_path, std::ios::out | std::ios::app);
     }
 
     for (const auto &index : tab.indexes) {
@@ -244,7 +244,7 @@ void SmManager::desc_table(const std::string& tab_name, Context* context) {
     RecordPrinter printer(captions.size());
     std::unique_ptr<std::fstream> outfile;
     if (g_output_file_on.load()) {
-        outfile = std::make_unique<std::fstream>("output.txt", std::ios::out | std::ios::app);
+        outfile = std::make_unique<std::fstream>(g_output_file_path, std::ios::out | std::ios::app);
         *outfile << format_output_row(captions);
     }
     // Print header

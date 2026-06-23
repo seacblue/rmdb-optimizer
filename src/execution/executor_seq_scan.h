@@ -25,6 +25,7 @@ class SeqScanExecutor : public AbstractExecutor {
     std::vector<ColMeta> cols_;         // scan后生成的记录的字段
     size_t len_;                        // scan后生成的每条记录的长度
     std::vector<Condition> fed_conds_;  // 同conds_，两个字段相同
+    bool reverse_;                      // 是否反向扫描（用于嵌套连接的内表）
 
     Rid rid_;
     std::unique_ptr<RecScan> scan_;     // table_iterator
@@ -32,10 +33,11 @@ class SeqScanExecutor : public AbstractExecutor {
     SmManager *sm_manager_;
 
    public:
-    SeqScanExecutor(SmManager *sm_manager, std::string tab_name, std::vector<Condition> conds, Context *context) {
+    SeqScanExecutor(SmManager *sm_manager, std::string tab_name, std::vector<Condition> conds, Context *context, bool reverse = false) {
         sm_manager_ = sm_manager;
         tab_name_ = std::move(tab_name);
         conds_ = std::move(conds);
+        reverse_ = reverse;
         TabMeta &tab = sm_manager_->db_.get_table(tab_name_);
         fh_ = sm_manager_->fhs_.at(tab_name_).get();
         cols_ = tab.cols;
@@ -47,9 +49,7 @@ class SeqScanExecutor : public AbstractExecutor {
     }
 
     void beginTuple() override {
-        scan_ = std::make_unique<RmScan>(fh_);
-        // RmScan() constructor already calls next(), so we're at first record.
-        // Advance to first record matching all conditions (if any).
+        scan_ = std::make_unique<RmScan>(fh_, reverse_);
         advance_to_match();
     }
 

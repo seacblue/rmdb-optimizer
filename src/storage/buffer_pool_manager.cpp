@@ -55,7 +55,7 @@ void BufferPoolManager::update_page(Page *page, PageId new_page_id, frame_id_t n
     }
     // 2. 更新 page_table_：移除旧映射，插入新映射
     page_table_.erase(page->id_);
-    page_table_.emplace(new_page_id, new_frame_id);
+    page_table_[new_page_id] = new_frame_id;
     // 3. 重置 page 数据缓冲区，设置新的 page_id
     page->reset_memory();
     page->id_ = new_page_id;
@@ -106,7 +106,7 @@ Page* BufferPoolManager::fetch_page(PageId page_id) {
         update_page(page, page_id, victim_frame_id);
     } else {
         // 从未使用过的帧（来自 free_list_），直接建立映射
-        page_table_.emplace(page_id, victim_frame_id);
+        page_table_[page_id] = victim_frame_id;
         page->id_ = page_id;
     }
 
@@ -237,7 +237,7 @@ Page* BufferPoolManager::new_page(PageId* page_id) {
     *page_id = {fd, new_page_no};           // 输出新 page_id
 
     // 4. 建立新映射
-    page_table_.emplace(*page_id, new_frame_id);
+    page_table_[*page_id] = new_frame_id;
 
     // 5. 初始化 page 元数据
     page->reset_memory();

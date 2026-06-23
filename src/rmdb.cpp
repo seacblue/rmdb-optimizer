@@ -87,7 +87,7 @@ void append_output_file(const std::string &text) {
         return;
     }
     std::fstream outfile;
-    outfile.open("output.txt", std::ios::out | std::ios::app);
+    outfile.open(g_output_file_path, std::ios::out | std::ios::app);
     outfile << text;
     outfile.close();
 }
@@ -433,10 +433,19 @@ int main(int argc, char **argv) {
             // Database not found, create a new one
             sm_manager->create_db(db_name);
         }
-        // Open database
+        // Resolve output path to absolute BEFORE open_db() chdir's into db dir
+        {
+            char cwd_buf[1024];
+            if (getcwd(cwd_buf, sizeof(cwd_buf))) {
+                g_output_file_path = std::string(cwd_buf) + "/" + db_name + "/output.txt";
+            } else {
+                g_output_file_path = "./output.txt";
+            }
+        }
+        // Open database (changes CWD to db dir internally)
         sm_manager->open_db(db_name);
         if (g_output_file_on.load()) {
-            std::ofstream truncate_output("output.txt", std::ios::out | std::ios::trunc);
+            std::ofstream truncate_output(g_output_file_path, std::ios::out | std::ios::trunc);
         }
 
         // recovery database

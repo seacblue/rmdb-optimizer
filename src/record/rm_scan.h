@@ -17,8 +17,9 @@ class RmFileHandle;
 class RmScan : public RecScan {
     const RmFileHandle *file_handle_;
     Rid rid_;
+    bool reverse_;
 public:
-    RmScan(const RmFileHandle *file_handle);
+    RmScan(const RmFileHandle *file_handle, bool reverse = false);
 
     void next() override;
 

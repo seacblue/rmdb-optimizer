@@ -165,7 +165,7 @@ void QlManager::select_from(std::unique_ptr<AbstractExecutor> executorTreeRoot, 
     // print header into file
     std::unique_ptr<std::fstream> outfile;
     if (g_output_file_on.load()) {
-        outfile = std::make_unique<std::fstream>("output.txt", std::ios::out | std::ios::app);
+        outfile = std::make_unique<std::fstream>(g_output_file_path, std::ios::out | std::ios::app);
         *outfile << format_output_row(captions);
     }
 
