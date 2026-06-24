@@ -28,10 +28,7 @@ DiskManager::DiskManager() { memset(fd2pageno_, 0, MAX_FD * (sizeof(std::atomic<
  */
 void DiskManager::write_page(int fd, page_id_t page_no, const char *offset, int num_bytes) {
     off_t file_offset = static_cast<off_t>(page_no) * PAGE_SIZE;
-    if (lseek(fd, file_offset, SEEK_SET) == -1) {
-        throw UnixError();
-    }
-    ssize_t bytes_write = write(fd, offset, num_bytes);
+    ssize_t bytes_write = pwrite(fd, offset, num_bytes, file_offset);
     if (bytes_write != num_bytes) {
         throw InternalError("DiskManager::write_page Error");
     }
@@ -46,10 +43,7 @@ void DiskManager::write_page(int fd, page_id_t page_no, const char *offset, int 
  */
 void DiskManager::read_page(int fd, page_id_t page_no, char *offset, int num_bytes) {
     off_t file_offset = static_cast<off_t>(page_no) * PAGE_SIZE;
-    if (lseek(fd, file_offset, SEEK_SET) == -1) {
-        throw UnixError();
-    }
-    ssize_t bytes_read = read(fd, offset, num_bytes);
+    ssize_t bytes_read = pread(fd, offset, num_bytes, file_offset);
     if (bytes_read != num_bytes) {
         throw InternalError("DiskManager::read_page Error");
     }
@@ -238,8 +232,7 @@ int DiskManager::read_log(char *log_data, int size, int offset) {
 
     size = std::min(size, file_size - offset);
     if(size == 0) return 0;
-    lseek(log_fd_, offset, SEEK_SET);
-    ssize_t bytes_read = read(log_fd_, log_data, size);
+    ssize_t bytes_read = pread(log_fd_, log_data, size, offset);
     assert(bytes_read == size);
     return bytes_read;
 }
@@ -253,12 +246,15 @@ int DiskManager::read_log(char *log_data, int size, int offset) {
 void DiskManager::write_log(char *log_data, int size) {
     if (log_fd_ == -1) {
         log_fd_ = open_file(LOG_FILE_NAME);
+        // 初始化日志文件末尾偏移（仅在首次打开时做一次 lseek）
+        log_file_end_.store(lseek(log_fd_, 0, SEEK_END));
     }
 
-    // write from the file_end
-    lseek(log_fd_, 0, SEEK_END);
-    ssize_t bytes_write = write(log_fd_, log_data, size);
+    // write from the file_end using cached offset (avoid lseek)
+    off_t end = log_file_end_.load();
+    ssize_t bytes_write = pwrite(log_fd_, log_data, size, end);
     if (bytes_write != size) {
         throw UnixError();
     }
+    log_file_end_.fetch_add(size);
 }

@@ -2,13 +2,9 @@
 # RMDB CI Pipeline
 #
 # CI 流程：
-#   1. 安装依赖
-#   2. CMake 配置 + 编译全部（rmdb + 测试）
-#   3. 运行 OJ 冒烟测试（ctest -R "^test_oj"）
-#      - OJ1 使用直接 API（无需 server）
-#      - OJ2-11 使用 client-server（测试内自启 server）
-#   4. 运行压力测试（ctest -R "^stress"）
-#   5. 失败时上传日志
+#   1. 安装依赖（含 ccache）→ 编译全部（ccache 加速）
+#   2. OJ 冒烟测试 + 压力测试（并行执行，互不等待）
+#   3. 失败时上传日志
 # ============================================================
 
 name: RMDB CI
@@ -19,22 +15,18 @@ on:
   pull_request:
     branches: [main, master]
 
+env:
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  CCACHE_MAXSIZE: 500M
+
 jobs:
-  build-and-test:
+  build:
     runs-on: ubuntu-latest
 
     steps:
-      # -------------------------------------------------------
-      # 步骤 1：检出代码
-      # -------------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      # -------------------------------------------------------
-      # 步骤 2：安装构建依赖
-      # -------------------------------------------------------
       - name: Install dependencies
         run: |
           sudo apt-get update -qq
@@ -46,46 +38,91 @@ jobs:
             bison \
             libreadline-dev \
             libgtest-dev \
-            python3
+            python3 \
+            ccache
 
-      # -------------------------------------------------------
-      # 步骤 3：CMake 配置 + 编译全部
-      # -------------------------------------------------------
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ runner.os }}-${{ hashFiles('**/CMakeLists.txt', '**/*.cpp', '**/*.h') }}
+          restore-keys: |
+            ccache-${{ runner.os }}-
+
       - name: Configure and build
         run: |
           cmake -B build -DCMAKE_BUILD_TYPE=Debug
           cmake --build build -j$(nproc)
 
-      # -------------------------------------------------------
-      # 步骤 4：运行 OJ 冒烟测试
-      # OJ2-11 会在测试内自动 fork+exec rmdb server 进程，
-      # 因此需要 build/bin/rmdb 在 cwd 路径可达。
-      # -------------------------------------------------------
+      - name: Show ccache stats
+        run: ccache -s
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts
+          path: build/
+          retention-days: 1
+
+  test-oj:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+          path: build/
+
+      - name: Restore permissions
+        run: chmod +x build/bin/*
+
       - name: Run OJ smoke tests
         run: |
           cd build
           ctest -R "^test_oj" --output-on-failure --timeout 120 -j1
         shell: bash
 
-      # -------------------------------------------------------
-      # 步骤 5：运行压力测试（允许失败）
-      # -------------------------------------------------------
+      - name: Upload OJ test artifacts
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: test-artifacts-oj
+          path: build/Testing/
+          retention-days: 7
+
+  test-stress:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+          path: build/
+
+      - name: Restore permissions
+        run: chmod +x build/bin/*
+
       - name: Run stress tests
-        if: always()
         run: |
           cd build
           ctest -R "^stress" --output-on-failure --timeout 600 -j1
         shell: bash
         continue-on-error: true
 
-      # -------------------------------------------------------
-      # 步骤 6：失败时上传日志
-      # -------------------------------------------------------
-      - name: Upload test artifacts
+      - name: Upload stress test artifacts
         uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: test-artifacts
-          path: |
-            build/Testing/
+          name: test-artifacts-stress
+          path: build/Testing/
           retention-days: 7

@@ -15,11 +15,13 @@ See the Mulan PSL v2 for more details. */
 #include <memory>
 #include <string>
 #include <vector>
+#include <unordered_map>
 
 #include "execution_defs.h"
 #include "execution_manager.h"
 #include "executor_abstract.h"
 #include "system/sm.h"
+#include "common/type_cast.h"
 
 class IndexScanExecutor : public AbstractExecutor {
    private:
@@ -36,6 +38,8 @@ class IndexScanExecutor : public AbstractExecutor {
     size_t cursor_ = 0;
     Rid rid_;
     SmManager *sm_manager_;
+    // 预计算的列名 → ColMeta 哈希映射，避免 eval_conds 中每行/每个条件都 find_if
+    std::unordered_map<std::string, const ColMeta *> col_map_;
 
    public:
     IndexScanExecutor(SmManager *sm_manager, std::string tab_name, std::vector<Condition> conds,
@@ -55,6 +59,10 @@ class IndexScanExecutor : public AbstractExecutor {
             } catch (...) {
                 mem_index_.reset();
             }
+        }
+        // 预计算列名查找映射
+        for (const auto &col : cols_) {
+            col_map_[col.tab_name + "." + col.name] = &col;
         }
     }
 
@@ -151,24 +159,25 @@ class IndexScanExecutor : public AbstractExecutor {
         memcpy(buf.data() + offset, casted.raw->data, col.len);
     }
 
-    static bool eval_conds(const char *rec_data, const std::vector<Condition> &conds,
-                           const std::vector<ColMeta> &cols) {
+    bool eval_conds(const char *rec_data, const std::vector<Condition> &conds) const {
         for (const auto &cond : conds) {
-            auto lhs_it = std::find_if(cols.begin(), cols.end(), [&](const ColMeta &c) {
-                return c.tab_name == cond.lhs_col.tab_name && c.name == cond.lhs_col.col_name;
-            });
-            if (lhs_it == cols.end()) return false;
-            Value lhs = Value::from_raw(lhs_it->type, rec_data + lhs_it->offset, lhs_it->len);
+            auto lhs_key = cond.lhs_col.tab_name + "." + cond.lhs_col.col_name;
+            auto lhs_it = col_map_.find(lhs_key);
+            if (lhs_it == col_map_.end()) return false;
+            const ColMeta *lhs_col = lhs_it->second;
+
             int cmp = 0;
             if (cond.is_rhs_val) {
-                cmp = compare_values(lhs, cond.rhs_val);
+                cmp = TypeCaster::compare_raw_with_value(
+                    rec_data + lhs_col->offset, lhs_col->type, lhs_col->len, cond.rhs_val);
             } else {
-                auto rhs_it = std::find_if(cols.begin(), cols.end(), [&](const ColMeta &c) {
-                    return c.tab_name == cond.rhs_col.tab_name && c.name == cond.rhs_col.col_name;
-                });
-                if (rhs_it == cols.end()) return false;
-                Value rhs = Value::from_raw(rhs_it->type, rec_data + rhs_it->offset, rhs_it->len);
-                cmp = compare_values(lhs, rhs);
+                auto rhs_key = cond.rhs_col.tab_name + "." + cond.rhs_col.col_name;
+                auto rhs_it = col_map_.find(rhs_key);
+                if (rhs_it == col_map_.end()) return false;
+                const ColMeta *rhs_col = rhs_it->second;
+                cmp = TypeCaster::compare_raw(
+                    rec_data + lhs_col->offset, lhs_col->type, lhs_col->len,
+                    rec_data + rhs_col->offset, rhs_col->type, rhs_col->len);
             }
             if (!compare_by_op(cmp, cond.op)) {
                 return false;
@@ -178,14 +187,20 @@ class IndexScanExecutor : public AbstractExecutor {
     }
 
     void collect_full_scan_candidates() {
-        RmScan scan(fh_);
-        while (!scan.is_end()) {
-            Rid candidate = scan.rid();
-            auto rec = fh_->get_record(candidate, context_);
-            if (eval_conds(rec->data, conds_, cols_)) {
-                matched_rids_.push_back(candidate);
+        // 直接遍历所有页面和槽位，避免 RmScan 的 fetch/unpin 双重开销
+        auto hdr = fh_->get_file_hdr();
+        for (int page_no = RM_FIRST_RECORD_PAGE; page_no < hdr.num_pages; ++page_no) {
+            RmPageHandle ph = fh_->fetch_page_handle(page_no);
+            int nslots = hdr.num_records_per_page;
+            bool any = false;
+            for (int slot = 0; slot < nslots; ++slot) {
+                if (!Bitmap::is_set(ph.bitmap, slot)) continue;
+                any = true;
+                if (eval_conds(ph.get_slot(slot), conds_)) {
+                    matched_rids_.push_back({page_no, slot});
+                }
             }
-            scan.next();
+            sm_manager_->get_bpm()->unpin_page(ph.page->get_page_id(), any);
         }
     }
 
@@ -292,10 +307,12 @@ class IndexScanExecutor : public AbstractExecutor {
         std::vector<Rid> filtered;
         filtered.reserve(matched_rids_.size());
         for (const auto &candidate : matched_rids_) {
-            auto rec = fh_->get_record(candidate, context_);
-            if (eval_conds(rec->data, conds_, cols_)) {
+            // 直接使用页面数据评估条件，避免 get_record 堆分配
+            RmPageHandle ph = fh_->fetch_page_handle(candidate.page_no);
+            if (eval_conds(ph.get_slot(candidate.slot_no), conds_)) {
                 filtered.push_back(candidate);
             }
+            sm_manager_->get_bpm()->unpin_page(ph.page->get_page_id(), false);
         }
         matched_rids_.swap(filtered);
     }

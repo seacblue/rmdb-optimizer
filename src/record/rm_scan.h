@@ -17,12 +17,18 @@ class RmFileHandle;
 class RmScan : public RecScan {
     const RmFileHandle *file_handle_;
     Rid rid_;
+    // page cache: avoid repeated fetch_page/unpin_page during sequential scans
+    mutable Page *cached_page_ = nullptr;
+    mutable int cached_page_no_ = -1;
 public:
     RmScan(const RmFileHandle *file_handle);
+    ~RmScan();
 
     void next() override;
 
     bool is_end() const override;
 
     Rid rid() const override;
+
+    void release_cache() const;
 };

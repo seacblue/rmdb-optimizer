@@ -68,40 +68,48 @@ class UpdateExecutor : public AbstractExecutor {
 
         for (auto &index : tab_.indexes) {
             std::unordered_set<std::string> new_keys;
+            new_keys.reserve(prepared.size());
 
             for (auto &item : prepared) {
-                auto key_buf = std::make_unique<char[]>(index.col_tot_len);
+                char key_buf[64];
+                assert(static_cast<size_t>(index.col_tot_len) <= sizeof(key_buf));
                 int offset = 0;
                 for (size_t k = 0; k < static_cast<size_t>(index.col_num); ++k) {
-                    memcpy(key_buf.get() + offset, item.new_rec->data + index.cols[k].offset, index.cols[k].len);
+                    memcpy(key_buf + offset, item.new_rec->data + index.cols[k].offset, index.cols[k].len);
                     offset += index.cols[k].len;
                 }
-                std::string key_str(key_buf.get(), key_buf.get() + index.col_tot_len);
-                if (!new_keys.insert(key_str).second) {
+                std::string key_str(key_buf, index.col_tot_len);
+                if (!new_keys.emplace(key_str).second) {
                     throw UniqueConstraintError(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols));
                 }
             }
 
-            RmScan scan(fh_);
-            while (!scan.is_end()) {
-                Rid current = {.page_no = scan.rid().page_no, .slot_no = scan.rid().slot_no};
-                std::string rid_tag = std::to_string(current.page_no) + "#" + std::to_string(current.slot_no);
-                if (touched_rids.find(rid_tag) != touched_rids.end()) {
-                    scan.next();
-                    continue;
+            // 检查表中现有记录是否与新的唯一键冲突
+            // 使用页面直接访问避免 get_record 堆分配
+            auto hdr = fh_->get_file_hdr();
+            for (int page_no = RM_FIRST_RECORD_PAGE; page_no < hdr.num_pages; ++page_no) {
+                RmPageHandle ph = fh_->fetch_page_handle(page_no);
+                int nslots = hdr.num_records_per_page;
+                bool page_dirty = false;
+                for (int slot = 0; slot < nslots; ++slot) {
+                    if (!Bitmap::is_set(ph.bitmap, slot)) continue;
+                    Rid current = {page_no, slot};
+                    std::string rid_tag = std::to_string(current.page_no) + "#" + std::to_string(current.slot_no);
+                    if (touched_rids.find(rid_tag) != touched_rids.end()) continue;
+
+                    char key_buf[64];
+                    int offset = 0;
+                    for (size_t k = 0; k < static_cast<size_t>(index.col_num); ++k) {
+                        memcpy(key_buf + offset, ph.get_slot(slot) + index.cols[k].offset, index.cols[k].len);
+                        offset += index.cols[k].len;
+                    }
+                    std::string key_str(key_buf, index.col_tot_len);
+                    if (new_keys.find(key_str) != new_keys.end()) {
+                        sm_manager_->get_bpm()->unpin_page(ph.page->get_page_id(), false);
+                        throw UniqueConstraintError(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols));
+                    }
                 }
-                auto rec = fh_->get_record(current, context_);
-                auto key_buf = std::make_unique<char[]>(index.col_tot_len);
-                int offset = 0;
-                for (size_t k = 0; k < static_cast<size_t>(index.col_num); ++k) {
-                    memcpy(key_buf.get() + offset, rec->data + index.cols[k].offset, index.cols[k].len);
-                    offset += index.cols[k].len;
-                }
-                std::string key_str(key_buf.get(), key_buf.get() + index.col_tot_len);
-                if (new_keys.find(key_str) != new_keys.end()) {
-                    throw UniqueConstraintError(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols));
-                }
-                scan.next();
+                sm_manager_->get_bpm()->unpin_page(ph.page->get_page_id(), page_dirty);
             }
         }
 

@@ -152,14 +152,19 @@ class IxNodeHandle {
      * @return int
      */
     int find_child(IxNodeHandle *child) {
-        int rid_idx;
-        for (rid_idx = 0; rid_idx < page_hdr->num_key; rid_idx++) {
-            if (get_rid(rid_idx)->page_no == child->get_page_no()) {
-                break;
+        page_id_t target = child->get_page_no();
+        int left = 0;
+        int right = page_hdr->num_key;
+        while (left < right) {
+            int mid = left + (right - left) / 2;
+            if (get_rid(mid)->page_no < target) {
+                left = mid + 1;
+            } else {
+                right = mid;
             }
         }
-        assert(rid_idx < page_hdr->num_key);
-        return rid_idx;
+        assert(left < page_hdr->num_key && get_rid(left)->page_no == target);
+        return left;
     }
 };
 

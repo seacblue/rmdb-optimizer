@@ -39,10 +39,33 @@ class Bitmap {
      * @return 找到了就返回偏移位置，没找到就返回max_n
      */
     static int next_bit(bool bit, const char *bm, int max_n, int curr) {
-        for (int i = curr + 1; i < max_n; i++) {
-            if (is_set(bm, i) == bit) {
-                return i;
+        int i = curr + 1;
+        // 快速路径：按字节检查，整字节为 0x00（找1时）或 0xFF（找0时）则跳过8位
+        if (bit) {
+            while (i + 8 <= max_n) {
+                int bucket = i / BITMAP_WIDTH;
+                // 如果整个字节都是0，跳过8位
+                if ((i % BITMAP_WIDTH) == 0 && bm[bucket] == 0) {
+                    i += 8;
+                    continue;
+                }
+                if (is_set(bm, i)) return i;
+                ++i;
             }
+        } else {
+            while (i + 8 <= max_n) {
+                int bucket = i / BITMAP_WIDTH;
+                // 如果整个字节都是1，跳过8位
+                if ((i % BITMAP_WIDTH) == 0 && static_cast<unsigned char>(bm[bucket]) == 0xFFU) {
+                    i += 8;
+                    continue;
+                }
+                if (!is_set(bm, i)) return i;
+                ++i;
+            }
+        }
+        for (; i < max_n; i++) {
+            if (is_set(bm, i) == bit) return i;
         }
         return max_n;
     }

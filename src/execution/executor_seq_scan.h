@@ -15,6 +15,7 @@ See the Mulan PSL v2 for more details. */
 #include "executor_abstract.h"
 #include "index/ix.h"
 #include "system/sm.h"
+#include "common/type_cast.h"
 
 class SeqScanExecutor : public AbstractExecutor {
    private:
@@ -47,15 +48,18 @@ class SeqScanExecutor : public AbstractExecutor {
 
     bool eval_cond(const char *rec_data, const Condition &cond) {
         auto lhs_col = get_col(cols_, cond.lhs_col);
-        Value lhs_val = Value::from_raw(lhs_col->type, rec_data + lhs_col->offset, lhs_col->len);
 
         if (cond.is_rhs_val) {
-            return compare_by_op(compare_values(lhs_val, cond.rhs_val), cond.op);
+            int cmp = TypeCaster::compare_raw_with_value(
+                rec_data + lhs_col->offset, lhs_col->type, lhs_col->len, cond.rhs_val);
+            return compare_by_op(cmp, cond.op);
         }
 
         auto rhs_col = get_col(cols_, cond.rhs_col);
-        Value rhs_val = Value::from_raw(rhs_col->type, rec_data + rhs_col->offset, rhs_col->len);
-        return compare_by_op(compare_values(lhs_val, rhs_val), cond.op);
+        int cmp = TypeCaster::compare_raw(
+            rec_data + lhs_col->offset, lhs_col->type, lhs_col->len,
+            rec_data + rhs_col->offset, rhs_col->type, rhs_col->len);
+        return compare_by_op(cmp, cond.op);
     }
 
     // 检查记录是否满足所有条件
@@ -73,11 +77,14 @@ class SeqScanExecutor : public AbstractExecutor {
             context_->lock_mgr_->lock_shared_on_table(context_->txn_, fh_->GetFd());
         }
         scan_ = std::make_unique<RmScan>(fh_);
-        // 跳过不满足条件的记录
+        // 跳过不满足条件的记录 — 直接访问页面数据，避免get_record的堆分配开销
         while (!scan_->is_end()) {
-            auto rec = fh_->get_record(scan_->rid(), context_);
-            if (is_satisfied(rec->data)) {
-                rid_ = scan_->rid();
+            Rid cur_rid = scan_->rid();
+            RmPageHandle page_handle = fh_->fetch_page_handle(cur_rid.page_no);
+            bool matched = is_satisfied(page_handle.get_slot(cur_rid.slot_no));
+            sm_manager_->get_bpm()->unpin_page(page_handle.page->get_page_id(), false);
+            if (matched) {
+                rid_ = cur_rid;
                 break;
             }
             scan_->next();
@@ -87,9 +94,12 @@ class SeqScanExecutor : public AbstractExecutor {
     void nextTuple() override {
         scan_->next();
         while (!scan_->is_end()) {
-            auto rec = fh_->get_record(scan_->rid(), context_);
-            if (is_satisfied(rec->data)) {
-                rid_ = scan_->rid();
+            Rid cur_rid = scan_->rid();
+            RmPageHandle page_handle = fh_->fetch_page_handle(cur_rid.page_no);
+            bool matched = is_satisfied(page_handle.get_slot(cur_rid.slot_no));
+            sm_manager_->get_bpm()->unpin_page(page_handle.page->get_page_id(), false);
+            if (matched) {
+                rid_ = cur_rid;
                 break;
             }
             scan_->next();

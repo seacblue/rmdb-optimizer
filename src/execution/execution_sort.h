@@ -18,7 +18,7 @@ See the Mulan PSL v2 for more details. */
 #include "executor_abstract.h"
 #include "index/ix.h"
 #include "system/sm.h"
-
+#include "common/type_cast.h"
 class SortExecutor : public AbstractExecutor {
    private:
     std::unique_ptr<AbstractExecutor> prev_;
@@ -57,9 +57,9 @@ class SortExecutor : public AbstractExecutor {
                          [&](const std::unique_ptr<RmRecord> &lhs, const std::unique_ptr<RmRecord> &rhs) {
                              for (size_t i = 0; i < sort_cols_.size(); ++i) {
                                  const auto &col = sort_cols_[i];
-                                 Value l = Value::from_raw(col.type, lhs->data + col.offset, col.len);
-                                 Value r = Value::from_raw(col.type, rhs->data + col.offset, col.len);
-                                 int cmp = compare_values(l, r);
+                                 int cmp = TypeCaster::compare_raw(
+                                     lhs->data + col.offset, col.type, col.len,
+                                     rhs->data + col.offset, col.type, col.len);
                                  if (cmp == 0) {
                                      continue;
                                  }
