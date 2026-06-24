@@ -159,11 +159,16 @@ class StressRecoveryTest : public ::testing::Test {
         std::string cmd = sql;
         if (!cmd.empty() && cmd.back() != ';') cmd += ";";
         if (write(sockfd_, cmd.c_str(), cmd.length() + 1) == -1) return "";
-        char buf[65536];
-        memset(buf, 0, sizeof(buf));
-        int len = recv(sockfd_, buf, sizeof(buf) - 1, 0);
-        if (len <= 0) return "";
-        return std::string(buf);
+        std::string result;
+        char buf[4096];
+        while (true) {
+            memset(buf, 0, sizeof(buf));
+            int len = recv(sockfd_, buf, sizeof(buf) - 1, 0);
+            if (len <= 0) break;
+            result.append(buf);
+            if (buf[len - 1] == '\0') break;
+        }
+        return result;
     }
 
     void expect_ok(const std::string &res) {

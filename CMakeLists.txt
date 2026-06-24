@@ -12,6 +12,13 @@ set(CMAKE_CXX_FLAGS "-Wall -O0 -g -ggdb3")
 set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -O0 -g")
 set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -O0 -g")
 
+# ccache support (faster rebuilds)
+find_program(CCACHE_PROGRAM ccache)
+if(CCACHE_PROGRAM)
+    set(CMAKE_CXX_COMPILER_LAUNCHER ${CCACHE_PROGRAM})
+    message(STATUS "ccache found: ${CCACHE_PROGRAM}")
+endif()
+
 enable_testing()
 add_subdirectory(src)
 add_subdirectory(deps)
@@ -26,4 +33,5 @@ add_custom_target(package_src
     COMMAND "${CMAKE_SOURCE_DIR}/scripts/package_src.sh" $(ZIP)
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     COMMENT "Packaging production subset (excl. tests/docs/CI) ..."
+    USES_TERMINAL
 )

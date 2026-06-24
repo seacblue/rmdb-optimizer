@@ -11,6 +11,7 @@ See the Mulan PSL v2 for more details. */
 #include "log_recovery.h"
 
 #include <algorithm>
+#include <string>
 #include <vector>
 
 RmFileHandle* RecoveryManager::get_file_handle(const std::string& tab_name) {
@@ -40,8 +41,9 @@ void RecoveryManager::parse_logs() {
             break;  // 非法长度，停止解析
         }
 
-        // 读取完整日志记录
-        std::vector<char> buf(log_tot_len);
+        // 读取完整日志记录（使用 thread_local 缓冲区，避免每次堆分配）
+        static thread_local std::string buf;
+        buf.resize(log_tot_len);
         int got = disk_manager_->read_log(buf.data(), log_tot_len, file_offset);
         if (got != static_cast<int>(log_tot_len)) {
             break;  // 残缺日志，丢弃
@@ -119,10 +121,19 @@ void RecoveryManager::redo() {
                 std::string tab_name(log->table_name_, log->table_name_size_);
                 RmFileHandle* fh = get_file_handle(tab_name);
                 if (fh == nullptr) break;
-                // 若该页page_lsn已>=本条日志lsn，说明已落盘，跳过
-                if (fh->get_page_lsn(log->rid_.page_no) >= log->lsn_) break;
-                fh->insert_record(log->rid_, log->insert_value_.data);
-                fh->set_page_lsn(log->rid_.page_no, log->lsn_);
+                // 合并为单次 fetch：检查 page_lsn + 插入 + 设置 lsn
+                RmPageHandle ph = fh->fetch_page_handle(log->rid_.page_no);
+                if (ph.page->get_page_lsn() >= log->lsn_) {
+                    sm_manager_->get_bpm()->unpin_page(ph.page->get_page_id(), false);
+                    break;
+                }
+                if (!Bitmap::is_set(ph.bitmap, log->rid_.slot_no)) {
+                    Bitmap::set(ph.bitmap, log->rid_.slot_no);
+                    ph.page_hdr->num_records++;
+                }
+                memcpy(ph.get_slot(log->rid_.slot_no), log->insert_value_.data, fh->get_file_hdr().record_size);
+                ph.page->set_page_lsn(log->lsn_);
+                sm_manager_->get_bpm()->unpin_page(ph.page->get_page_id(), true);
                 break;
             }
             case LogType::DELETE: {
@@ -130,11 +141,16 @@ void RecoveryManager::redo() {
                 std::string tab_name(log->table_name_, log->table_name_size_);
                 RmFileHandle* fh = get_file_handle(tab_name);
                 if (fh == nullptr) break;
-                if (fh->get_page_lsn(log->rid_.page_no) >= log->lsn_) break;
-                if (fh->is_record(log->rid_)) {
-                    fh->delete_record(log->rid_, nullptr);
+                // 合并为单次 fetch：检查 page_lsn + 删除 + 设置 lsn
+                RmPageHandle ph = fh->fetch_page_handle(log->rid_.page_no);
+                if (ph.page->get_page_lsn() >= log->lsn_) {
+                    sm_manager_->get_bpm()->unpin_page(ph.page->get_page_id(), false);
+                    break;
                 }
-                fh->set_page_lsn(log->rid_.page_no, log->lsn_);
+                Bitmap::reset(ph.bitmap, log->rid_.slot_no);
+                ph.page_hdr->num_records--;
+                ph.page->set_page_lsn(log->lsn_);
+                sm_manager_->get_bpm()->unpin_page(ph.page->get_page_id(), true);
                 break;
             }
             case LogType::UPDATE: {
@@ -142,11 +158,15 @@ void RecoveryManager::redo() {
                 std::string tab_name(log->table_name_, log->table_name_size_);
                 RmFileHandle* fh = get_file_handle(tab_name);
                 if (fh == nullptr) break;
-                if (fh->get_page_lsn(log->rid_.page_no) >= log->lsn_) break;
-                if (fh->is_record(log->rid_)) {
-                    fh->update_record(log->rid_, log->new_value_.data, nullptr);
+                // 合并为单次 fetch：检查 page_lsn + 更新 + 设置 lsn
+                RmPageHandle ph = fh->fetch_page_handle(log->rid_.page_no);
+                if (ph.page->get_page_lsn() >= log->lsn_) {
+                    sm_manager_->get_bpm()->unpin_page(ph.page->get_page_id(), false);
+                    break;
                 }
-                fh->set_page_lsn(log->rid_.page_no, log->lsn_);
+                memcpy(ph.get_slot(log->rid_.slot_no), log->new_value_.data, fh->get_file_hdr().record_size);
+                ph.page->set_page_lsn(log->lsn_);
+                sm_manager_->get_bpm()->unpin_page(ph.page->get_page_id(), true);
                 break;
             }
             default:
