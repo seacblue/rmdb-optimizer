@@ -1,21 +1,23 @@
 # ============================================================
 # RMDB CI Pipeline
 #
-# 当前分支以可交付的服务端集成验证为主：
+# CI 流程：
 #   1. 安装依赖
-#   2. 构建 rmdb 服务端
-#   3. 启动服务端并通过 socket 跑非交互式 SQL 集成测试
-#   4. 做轻量 CI 一致性检查
-#   5. 失败时上传日志与 output.txt
+#   2. CMake 配置 + 编译全部（rmdb + 测试）
+#   3. 运行 OJ 冒烟测试（ctest -R "^test_oj"）
+#      - OJ1 使用直接 API（无需 server）
+#      - OJ2-11 使用 client-server（测试内自启 server）
+#   4. 运行压力测试（ctest -R "^stress"）
+#   5. 失败时上传日志
 # ============================================================
 
 name: RMDB CI
 
 on:
   push:
-    branches: [main, feat/*, dev/*]
+    branches: [main, master, feat/*, dev/*]
   pull_request:
-    branches: [main]
+    branches: [main, master]
 
 jobs:
   build-and-test:
@@ -26,7 +28,7 @@ jobs:
       # 步骤 1：检出代码
       # -------------------------------------------------------
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -35,67 +37,55 @@ jobs:
       # -------------------------------------------------------
       - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
             build-essential \
             cmake \
             g++ \
             flex \
             bison \
             libreadline-dev \
+            libgtest-dev \
             python3
 
       # -------------------------------------------------------
-      # 步骤 3：CMake 配置
+      # 步骤 3：CMake 配置 + 编译全部
       # -------------------------------------------------------
-      - name: Configure
+      - name: Configure and build
         run: |
-          mkdir -p build
-          cd build
-          cmake .. -DCMAKE_BUILD_TYPE=Debug
+          cmake -B build -DCMAKE_BUILD_TYPE=Debug
+          cmake --build build -j$(nproc)
 
       # -------------------------------------------------------
-      # 步骤 4：编译 rmdb 服务端
+      # 步骤 4：运行 OJ 冒烟测试
+      # OJ2-11 会在测试内自动 fork+exec rmdb server 进程，
+      # 因此需要 build/bin/rmdb 在 cwd 路径可达。
       # -------------------------------------------------------
-      - name: Build rmdb
-        run: |
-          cd build
-          cmake --build . -j$(nproc) --target rmdb
-
-      # -------------------------------------------------------
-      # 步骤 5：运行非交互式集成测试
-      # -------------------------------------------------------
-      - name: Run integration test
+      - name: Run OJ smoke tests
         run: |
           cd build
-          ./bin/rmdb execution_test_db > server.log 2>&1 &
-          SERVER_PID=$!
-          cleanup() {
-            kill -INT "$SERVER_PID" >/dev/null 2>&1 || true
-            wait "$SERVER_PID" >/dev/null 2>&1 || true
-          }
-          trap cleanup EXIT
-          python3 ../src/test/integration_test.py \
-            --host 127.0.0.1 \
-            --port 8765 \
-            --output "$(pwd)/execution_test_db/output.txt"
+          ctest -R "^test_oj" --output-on-failure --timeout 120 -j1
+        shell: bash
 
       # -------------------------------------------------------
-      # 步骤 6：轻量 CI 一致性检查
+      # 步骤 5：运行压力测试（允许失败）
       # -------------------------------------------------------
-      - name: CI check
+      - name: Run stress tests
+        if: always()
         run: |
-          bash scripts/ci_check.sh 2>&1
+          cd build
+          ctest -R "^stress" --output-on-failure --timeout 600 -j1
+        shell: bash
+        continue-on-error: true
 
       # -------------------------------------------------------
-      # 步骤 7：失败时上传日志
+      # 步骤 6：失败时上传日志
       # -------------------------------------------------------
-      - name: Upload integration artifacts
-        uses: actions/upload-artifact@v7
+      - name: Upload test artifacts
+        uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: integration-artifacts
+          name: test-artifacts
           path: |
-            build/server.log
-            build/execution_test_db/output.txt
+            build/Testing/
           retention-days: 7

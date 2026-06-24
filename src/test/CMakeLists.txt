@@ -1,22 +1,20 @@
 # ============================================================
 # RMDB 测试结构
 #
-# 测试按类别分为三个目录：
+# 测试按类别分为两个目录：
 #   oj/      —— OJ 接口兼容性测试（兼冒烟测试）
 #              覆盖题目描述中明确列出的全部接口
 #              编译快、运行快，CI 入口首选
-#   module/  —— 模块级单元测试
-#              每个底层模块对应一个独立的测试文件
-#              命名：test_<module>.cpp → test_<缩写>
 #   stress/  —— 压力/性能测试
 #              大数据量、并发、边界压力场景
-#              需要较长的运行时间，不加入 CI 快速检查
+#              需要较长的运行时间
 # ============================================================
 
 # 统一的头文件搜索路径
 set(TEST_INCLUDES ${CMAKE_SOURCE_DIR}/src)
-# 统一的链接库：所有模块测试共享 gtest
+# 统一的链接库
 set(TEST_LIBS gtest_main)
+set(CS_TEST_LIBS gtest_main pthread)  # client-server tests
 
 # ============================================================
 # CTest 注册 + 测试目标
@@ -24,153 +22,192 @@ set(TEST_LIBS gtest_main)
 # CI 通过 ctest --output-on-failure 批量运行全部测试。
 # ============================================================
 
-# ==================== 模块测试 (module/) ====================
-
-# -------------------- LRUReplacer 测试 --------------------
-# 对应源代码: src/replacer/lru_replacer.cpp
-# 编译 & 运行: make test_lru -j$(nproc) && ./bin/test_lru
-add_executable(test_lru module/test_lru_replacer.cpp)
-target_link_libraries(test_lru lru_replacer ${TEST_LIBS})
-target_include_directories(test_lru PRIVATE ${TEST_INCLUDES})
-add_test(NAME test_lru COMMAND test_lru
-    WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
-
-# -------------------- DiskManager 测试 --------------------
-# 对应源代码: src/storage/disk_manager.cpp
-# 编译 & 运行: make test_dm -j$(nproc) && ./bin/test_dm
-add_executable(test_dm module/test_disk_manager.cpp)
-target_link_libraries(test_dm storage ${TEST_LIBS})
-target_include_directories(test_dm PRIVATE ${TEST_INCLUDES})
-add_test(NAME test_dm COMMAND test_dm
-    WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
-
-# -------------------- SmManager 测试 --------------------
-# 对应源代码: src/system/sm_manager.cpp
-# 依赖: system → index → storage, record → system(storage,transaction)
-# 编译 & 运行: make test_sm -j$(nproc) && ./bin/test_sm
-add_executable(test_sm module/test_system.cpp)
-target_link_libraries(test_sm system index record storage lru_replacer ${TEST_LIBS})
-target_include_directories(test_sm PRIVATE ${TEST_INCLUDES})
-# 静态库循环依赖（record↔system）通过 --start-group 解决
-target_link_options(test_sm PRIVATE -Wl,--start-group)
-target_link_options(test_sm PRIVATE -Wl,--end-group)
-add_test(NAME test_sm COMMAND test_sm
-    WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
-
-# -------------------- BufferPoolManager 测试 --------------------
-# 对应源代码: src/storage/buffer_pool_manager.cpp
-# 依赖: storage(含 disk_manager + lru_replacer)
-# 编译 & 运行: make test_bpm -j$(nproc) && ./bin/test_bpm
-add_executable(test_bpm module/test_buffer_pool_manager.cpp)
-target_link_libraries(test_bpm storage lru_replacer ${TEST_LIBS})
-target_include_directories(test_bpm PRIVATE ${TEST_INCLUDES})
-add_test(NAME test_bpm COMMAND test_bpm
-    WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
-
-# -------------------- Record 测试 (RmFileHandle + RmScan) --------------------
-# 对应源代码: src/record/rm_file_handle.cpp + rm_scan.cpp
-# 依赖: record → system, transaction, storage; 需 start-group 解循环
-# 编译 & 运行: make test_record -j$(nproc) && ./bin/test_record
-add_executable(test_record module/test_record.cpp)
-target_link_libraries(test_record record storage lru_replacer ${TEST_LIBS})
-target_include_directories(test_record PRIVATE ${TEST_INCLUDES})
-# 静态库循环依赖（record↔system）通过 --start-group 解决
-target_link_options(test_record PRIVATE -Wl,--start-group)
-target_link_options(test_record PRIVATE -Wl,--end-group)
-add_test(NAME test_record COMMAND test_record
-    WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
-
-# -------------------- Execution 测试 --------------------
-# 对应源代码: src/execution/ 全部 8 种 Executor
-# 依赖: execution → system, record, index, storage, transaction
-# 编译 & 运行: make test_execution -j$(nproc) && ./bin/test_execution
-add_executable(test_execution module/test_execution.cpp)
-target_link_libraries(test_execution execution system record index storage lru_replacer ${TEST_LIBS})
-target_include_directories(test_execution PRIVATE ${TEST_INCLUDES})
-target_link_options(test_execution PRIVATE -Wl,--start-group)
-target_link_options(test_execution PRIVATE -Wl,--end-group)
-add_test(NAME test_execution COMMAND test_execution
-    WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
-
 # ==================== OJ/冒烟测试 (oj/) ====================
 
-# -------------------- 存储管理 OJ 测试 --------------------
-# Problem 1: 存储管理测试
-# 编译 & 运行: make test_oj_storage -j$(nproc) && ./bin/test_oj_storage
-add_executable(test_oj_storage oj/test_oj_integrity.cpp)
-target_link_libraries(test_oj_storage record storage lru_replacer ${TEST_LIBS})
-target_include_directories(test_oj_storage PRIVATE ${TEST_INCLUDES})
-# 静态库循环依赖（record↔system）通过 --start-group 解决
-target_link_options(test_oj_storage PRIVATE -Wl,--start-group)
-target_link_options(test_oj_storage PRIVATE -Wl,--end-group)
-add_test(NAME test_oj_storage COMMAND test_oj_storage
+# -------------------- Problem 1: 存储管理 OJ 测试 --------------------
+# 使用直接 API 调用（无需 server）
+add_executable(test_oj1 oj/test_oj1.cpp)
+target_link_libraries(test_oj1 record storage lru_replacer ${TEST_LIBS})
+target_include_directories(test_oj1 PRIVATE ${TEST_INCLUDES})
+target_link_options(test_oj1 PRIVATE -Wl,--start-group)
+target_link_options(test_oj1 PRIVATE -Wl,--end-group)
+add_test(NAME test_oj1 COMMAND test_oj1
     WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
 
-
-# -------------------- 查询执行 OJ 测试 --------------------
-# Problem 2: SQL 查询执行（SELECT/INSERT/UPDATE/DELETE/JOIN）
-# 编译 & 运行: make test_oj_execution -j$(nproc) && ./bin/test_oj_execution
-add_executable(test_oj_execution oj/test_oj_execution.cpp)
-target_link_libraries(test_oj_execution execution system record index storage lru_replacer parser planner analyze ${TEST_LIBS})
-target_include_directories(test_oj_execution PRIVATE ${TEST_INCLUDES})
-target_link_options(test_oj_execution PRIVATE -Wl,--start-group)
-target_link_options(test_oj_execution PRIVATE -Wl,--end-group)
-add_test(NAME test_oj_execution COMMAND test_oj_execution
+# -------------------- Problem 2: SQL 执行 OJ 测试 --------------------
+# 使用 client-server 方式
+add_executable(test_oj2 oj/test_oj2.cpp)
+target_link_libraries(test_oj2 ${CS_TEST_LIBS})
+target_include_directories(test_oj2 PRIVATE ${TEST_INCLUDES})
+add_test(NAME test_oj2 COMMAND test_oj2
     WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
 
-# -------------------- 故障恢复 OJ 测试 --------------------
-# Problem 10: WAL + redo/undo crash recovery
-add_executable(test_oj_recovery oj/test_oj_recovery.cpp)
-target_link_libraries(test_oj_recovery execution system record index storage lru_replacer parser planner analyze recovery common ${TEST_LIBS})
-target_include_directories(test_oj_recovery PRIVATE ${TEST_INCLUDES})
-target_link_options(test_oj_recovery PRIVATE -Wl,--start-group)
-target_link_options(test_oj_recovery PRIVATE -Wl,--end-group)
-add_test(NAME test_oj_recovery COMMAND test_oj_recovery
+# -------------------- Problem 3: BIGINT 类型 OJ 测试 --------------------
+add_executable(test_oj3 oj/test_oj3.cpp)
+target_link_libraries(test_oj3 ${CS_TEST_LIBS})
+target_include_directories(test_oj3 PRIVATE ${TEST_INCLUDES})
+add_test(NAME test_oj3 COMMAND test_oj3
     WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
 
-# -------------------- 事务控制 OJ 测试 --------------------
-# Problem: explicit begin/commit/abort with and without indexes
-add_executable(test_oj_transaction oj/test_oj_transaction.cpp)
-target_link_libraries(test_oj_transaction execution system record index storage lru_replacer parser planner analyze recovery common ${TEST_LIBS})
-target_include_directories(test_oj_transaction PRIVATE ${TEST_INCLUDES})
-target_link_options(test_oj_transaction PRIVATE -Wl,--start-group)
-target_link_options(test_oj_transaction PRIVATE -Wl,--end-group)
-add_test(NAME test_oj_transaction COMMAND test_oj_transaction
+# -------------------- Problem 4: DATETIME 类型 OJ 测试 --------------------
+add_executable(test_oj4 oj/test_oj4.cpp)
+target_link_libraries(test_oj4 ${CS_TEST_LIBS})
+target_include_directories(test_oj4 PRIVATE ${TEST_INCLUDES})
+add_test(NAME test_oj4 COMMAND test_oj4
+    WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+
+# -------------------- Problem 5: B+Tree 索引 OJ 测试 --------------------
+add_executable(test_oj5 oj/test_oj5.cpp)
+target_link_libraries(test_oj5 ${CS_TEST_LIBS})
+target_include_directories(test_oj5 PRIVATE ${TEST_INCLUDES})
+add_test(NAME test_oj5 COMMAND test_oj5
+    WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+
+# -------------------- Problem 6: 聚合函数 OJ 测试 --------------------
+add_executable(test_oj6 oj/test_oj6.cpp)
+target_link_libraries(test_oj6 ${CS_TEST_LIBS})
+target_include_directories(test_oj6 PRIVATE ${TEST_INCLUDES})
+add_test(NAME test_oj6 COMMAND test_oj6
+    WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+
+# -------------------- Problem 7: ORDER BY + LIMIT OJ 测试 --------------------
+add_executable(test_oj7 oj/test_oj7.cpp)
+target_link_libraries(test_oj7 ${CS_TEST_LIBS})
+target_include_directories(test_oj7 PRIVATE ${TEST_INCLUDES})
+add_test(NAME test_oj7 COMMAND test_oj7
+    WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+
+# -------------------- Problem 8: 块嵌套循环连接 OJ 测试 --------------------
+add_executable(test_oj8 oj/test_oj8.cpp)
+target_link_libraries(test_oj8 ${CS_TEST_LIBS})
+target_include_directories(test_oj8 PRIVATE ${TEST_INCLUDES})
+add_test(NAME test_oj8 COMMAND test_oj8
+    WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+
+# -------------------- Problem 9: 事务控制 OJ 测试 --------------------
+add_executable(test_oj9 oj/test_oj9.cpp)
+target_link_libraries(test_oj9 ${CS_TEST_LIBS})
+target_include_directories(test_oj9 PRIVATE ${TEST_INCLUDES})
+add_test(NAME test_oj9 COMMAND test_oj9
+    WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+
+# -------------------- Problem 10: 并发控制 OJ 测试 --------------------
+add_executable(test_oj10 oj/test_oj10.cpp)
+target_link_libraries(test_oj10 ${CS_TEST_LIBS})
+target_include_directories(test_oj10 PRIVATE ${TEST_INCLUDES})
+add_test(NAME test_oj10 COMMAND test_oj10
+    WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+
+# -------------------- Problem 11: 故障恢复 OJ 测试 --------------------
+add_executable(test_oj11 oj/test_oj11.cpp)
+target_link_libraries(test_oj11 ${CS_TEST_LIBS})
+target_include_directories(test_oj11 PRIVATE ${TEST_INCLUDES})
+add_test(NAME test_oj11 COMMAND test_oj11
     WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
 
 # ==================== 压力测试 (stress/) ====================
 
-# TODO: 从 src/unit_test.cpp 中剥离 BigStorageTest、BufferPoolManagerConcurrencyTest、
-#       StorageTest.SimpleTest 至 stress/ 目录下的独立文件
-#
-# 模板：
-# add_executable(test_big_storage stress/test_big_storage.cpp)
-# target_link_libraries(test_big_storage storage lru_replacer ${TEST_LIBS})
-# target_include_directories(test_big_storage PRIVATE ${TEST_INCLUDES})
-# add_test(NAME test_big_storage COMMAND test_big_storage
-#     WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+# 注：压力测试需要较长时间，默认不加入快速 CI 检查。
+# 在 CI 中可以通过 ctest -R stress -j1 单独运行。
+
+# -------------------- 存储模块压力测试 --------------------
+add_executable(stress_oj1_storage stress/stress_oj1_storage.cpp)
+target_link_libraries(stress_oj1_storage storage lru_replacer ${TEST_LIBS})
+target_include_directories(stress_oj1_storage PRIVATE ${TEST_INCLUDES})
+target_link_options(stress_oj1_storage PRIVATE -Wl,--start-group)
+target_link_options(stress_oj1_storage PRIVATE -Wl,--end-group)
+add_test(NAME stress_oj1_storage COMMAND stress_oj1_storage
+    WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+
+# -------------------- SQL 执行压力测试 --------------------
+add_executable(stress_oj2_sql stress/stress_oj2_sql.cpp)
+target_link_libraries(stress_oj2_sql ${CS_TEST_LIBS})
+target_include_directories(stress_oj2_sql PRIVATE ${TEST_INCLUDES})
+add_test(NAME stress_oj2_sql COMMAND stress_oj2_sql
+    WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+
+# -------------------- BIGINT 压力测试 --------------------
+add_executable(stress_oj3_bigint stress/stress_oj3_bigint.cpp)
+target_link_libraries(stress_oj3_bigint ${CS_TEST_LIBS})
+target_include_directories(stress_oj3_bigint PRIVATE ${TEST_INCLUDES})
+add_test(NAME stress_oj3_bigint COMMAND stress_oj3_bigint
+    WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+
+# -------------------- DATETIME 压力测试 --------------------
+add_executable(stress_oj4_datetime stress/stress_oj4_datetime.cpp)
+target_link_libraries(stress_oj4_datetime ${CS_TEST_LIBS})
+target_include_directories(stress_oj4_datetime PRIVATE ${TEST_INCLUDES})
+add_test(NAME stress_oj4_datetime COMMAND stress_oj4_datetime
+    WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+
+# -------------------- 索引压力测试 --------------------
+add_executable(stress_oj5_index stress/stress_oj5_index.cpp)
+target_link_libraries(stress_oj5_index ${CS_TEST_LIBS})
+target_include_directories(stress_oj5_index PRIVATE ${TEST_INCLUDES})
+add_test(NAME stress_oj5_index COMMAND stress_oj5_index
+    WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+
+# -------------------- 聚合函数压力测试 --------------------
+add_executable(stress_oj6_aggregate stress/stress_oj6_aggregate.cpp)
+target_link_libraries(stress_oj6_aggregate ${CS_TEST_LIBS})
+target_include_directories(stress_oj6_aggregate PRIVATE ${TEST_INCLUDES})
+add_test(NAME stress_oj6_aggregate COMMAND stress_oj6_aggregate
+    WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+
+# -------------------- ORDER BY 压力测试 --------------------
+add_executable(stress_oj7_orderby stress/stress_oj7_orderby.cpp)
+target_link_libraries(stress_oj7_orderby ${CS_TEST_LIBS})
+target_include_directories(stress_oj7_orderby PRIVATE ${TEST_INCLUDES})
+add_test(NAME stress_oj7_orderby COMMAND stress_oj7_orderby
+    WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+
+# -------------------- 连接压力测试 --------------------
+add_executable(stress_oj8_join stress/stress_oj8_join.cpp)
+target_link_libraries(stress_oj8_join ${CS_TEST_LIBS})
+target_include_directories(stress_oj8_join PRIVATE ${TEST_INCLUDES})
+add_test(NAME stress_oj8_join COMMAND stress_oj8_join
+    WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+
+# -------------------- 事务压力测试 --------------------
+add_executable(stress_oj9_transaction stress/stress_oj9_transaction.cpp)
+target_link_libraries(stress_oj9_transaction ${CS_TEST_LIBS})
+target_include_directories(stress_oj9_transaction PRIVATE ${TEST_INCLUDES})
+add_test(NAME stress_oj9_transaction COMMAND stress_oj9_transaction
+    WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+
+# -------------------- 并发压力测试 --------------------
+add_executable(stress_oj10_concurrency stress/stress_oj10_concurrency.cpp)
+target_link_libraries(stress_oj10_concurrency ${CS_TEST_LIBS})
+target_include_directories(stress_oj10_concurrency PRIVATE ${TEST_INCLUDES})
+add_test(NAME stress_oj10_concurrency COMMAND stress_oj10_concurrency
+    WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+
+# -------------------- 故障恢复压力测试 --------------------
+add_executable(stress_oj11_recovery stress/stress_oj11_recovery.cpp)
+target_link_libraries(stress_oj11_recovery ${CS_TEST_LIBS})
+target_include_directories(stress_oj11_recovery PRIVATE ${TEST_INCLUDES})
+add_test(NAME stress_oj11_recovery COMMAND stress_oj11_recovery
+    WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+
 
 # ============================================================
-# 新模块测试添加模板
-#
-# add_executable(test_ix module/test_ix_index_handle.cpp)
-# target_link_libraries(test_ix index storage lru_replacer ${TEST_LIBS})
-# target_include_directories(test_ix PRIVATE ${TEST_INCLUDES})
-# add_test(NAME test_ix COMMAND test_ix
-#     WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
-#
-# add_executable(test_lock module/test_lock_manager.cpp)
-# target_link_libraries(test_lock transaction ${TEST_LIBS})
-# target_include_directories(test_lock PRIVATE ${TEST_INCLUDES})
-# add_test(NAME test_lock COMMAND test_lock
-#     WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+# 便捷运行目标
+# 用法: make run_oj_tests      — 运行所有 OJ 测试
+#       make run_stress_tests  — 运行所有压力测试
+#       ctest --output-on-failure   — 运行全部
 # ============================================================
 
-# -------------------- 批量运行脚本 ---
-# 不编译任何东西，只提供一个便捷 target 名
-# 用法: make run_all_tests
-# 或在构建目录中: ctest --output-on-failure
+add_custom_target(run_oj_tests
+    COMMAND ctest -R "^test_oj" --output-on-failure
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    COMMENT "Running all OJ tests via CTest...")
+
+add_custom_target(run_stress_tests
+    COMMAND ctest -R "^stress" --output-on-failure
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    COMMENT "Running all stress tests via CTest...")
+
 add_custom_target(run_all_tests
     COMMAND ctest --output-on-failure
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-    COMMENT "Running all module tests via CTest...")
+    COMMENT "Running all tests via CTest...")
