@@ -87,6 +87,27 @@ class RmFileHandle {
 
     RmPageHandle fetch_page_handle(int page_no) const;
 
+    // 设置指定记录页面的page_lsn（用于WAL与故障恢复），并标记为脏页
+    void set_page_lsn(int page_no, lsn_t lsn) {
+        if (page_no < RM_FIRST_RECORD_PAGE || page_no >= file_hdr_.num_pages) {
+            return;
+        }
+        RmPageHandle page_handle = fetch_page_handle(page_no);
+        page_handle.page->set_page_lsn(lsn);
+        buffer_pool_manager_->unpin_page(page_handle.page->get_page_id(), true);
+    }
+
+    // 获取指定记录页面的page_lsn
+    lsn_t get_page_lsn(int page_no) const {
+        if (page_no < RM_FIRST_RECORD_PAGE || page_no >= file_hdr_.num_pages) {
+            return INVALID_LSN;
+        }
+        RmPageHandle page_handle = fetch_page_handle(page_no);
+        lsn_t lsn = page_handle.page->get_page_lsn();
+        buffer_pool_manager_->unpin_page(page_handle.page->get_page_id(), false);
+        return lsn;
+    }
+
    private:
     RmPageHandle create_page_handle();
 

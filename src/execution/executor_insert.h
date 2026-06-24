@@ -16,6 +16,8 @@ See the Mulan PSL v2 for more details. */
 #include "executor_abstract.h"
 #include "index/ix.h"
 #include "system/sm.h"
+#include "recovery/log_manager.h"
+#include "common/config.h"
 
 class InsertExecutor : public AbstractExecutor {
    private:
@@ -57,31 +59,24 @@ class InsertExecutor : public AbstractExecutor {
             coerce_value(val, col.type, col.len);
             memcpy(rec.data + col.offset, val.raw->data, col.len);
         }
-        for (size_t j = 0; j < tab_.indexes.size(); ++j) {
-            auto& index = tab_.indexes[j];
-            auto ih = sm_manager_->ihs_.at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
-            auto key = std::make_unique<char[]>(index.col_tot_len);
-            int offset = 0;
-            for (size_t k = 0; k < static_cast<size_t>(index.col_num); ++k) {
-                memcpy(key.get() + offset, rec.data + index.cols[k].offset, index.cols[k].len);
-                offset += index.cols[k].len;
-            }
-            std::vector<Rid> result;
-            if (ih->get_value(key.get(), &result, context_->txn_)) {
-                throw UniqueConstraintError(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols));
-            }
-        }
+        sm_manager_->check_index_conflicts(tab_name_, rec);
 
         // Insert into record file
         rid_ = fh_->insert_record(rec.data, context_);
         if (context_ != nullptr && context_->txn_ != nullptr) {
             context_->txn_->append_write_record(
                 new WriteRecord(WType::INSERT_TUPLE, tab_name_, rid_));
+            // 写insert日志，并把lsn刷到页面上（WAL: 先写日志缓冲，再修改页面元数据）
+            if (enable_logging && context_->log_mgr_ != nullptr) {
+                InsertLogRecord log_rec(context_->txn_->get_transaction_id(), rec, rid_, tab_name_);
+                log_rec.prev_lsn_ = context_->txn_->get_prev_lsn();
+                lsn_t lsn = context_->log_mgr_->add_log_to_buffer(&log_rec);
+                context_->txn_->set_prev_lsn(lsn);
+                fh_->set_page_lsn(rid_.page_no, lsn);
+            }
         }
 
-        if (!tab_.indexes.empty()) {
-            sm_manager_->rebuild_indexes(tab_name_, context_);
-        }
+        sm_manager_->insert_index_entries(tab_name_, rec, rid_, context_);
         return nullptr;
     }
     Rid &rid() override { return rid_; }

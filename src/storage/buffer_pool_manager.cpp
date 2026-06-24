@@ -34,6 +34,7 @@ void BufferPoolManager::update_page(Page *page, PageId new_page_id, frame_id_t n
     PageId old_page_id = page->id_;
     if (old_page_id.page_no != INVALID_PAGE_ID) {
         if (page->is_dirty_) {
+            ensure_log_persisted(page);
             disk_manager_->write_page(old_page_id.fd, old_page_id.page_no, page->data_, PAGE_SIZE);
             page->is_dirty_ = false;
         }
@@ -115,6 +116,7 @@ bool BufferPoolManager::flush_page(PageId page_id) {
         return false;
     }
     Page *page = &pages_[it->second];
+    ensure_log_persisted(page);
     disk_manager_->write_page(page_id.fd, page_id.page_no, page->data_, PAGE_SIZE);
     page->is_dirty_ = false;
     return true;
@@ -159,6 +161,7 @@ bool BufferPoolManager::delete_page(PageId page_id) {
         return false;
     }
     if (page->is_dirty_) {
+        ensure_log_persisted(page);
         disk_manager_->write_page(page_id.fd, page_id.page_no, page->data_, PAGE_SIZE);
     }
     replacer_->pin(frame_id);
@@ -181,6 +184,7 @@ void BufferPoolManager::flush_all_pages(int fd) {
         Page *page = &pages_[frame_id];
         PageId page_id = page->id_;
         if (page_id.fd == fd && page_id.page_no != INVALID_PAGE_ID) {
+            ensure_log_persisted(page);
             disk_manager_->write_page(fd, page_id.page_no, page->data_, PAGE_SIZE);
             page->is_dirty_ = false;
         }

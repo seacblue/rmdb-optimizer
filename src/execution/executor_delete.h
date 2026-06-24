@@ -14,6 +14,8 @@ See the Mulan PSL v2 for more details. */
 #include "executor_abstract.h"
 #include "index/ix.h"
 #include "system/sm.h"
+#include "recovery/log_manager.h"
+#include "common/config.h"
 
 class DeleteExecutor : public AbstractExecutor {
    private:
@@ -46,11 +48,17 @@ class DeleteExecutor : public AbstractExecutor {
             if (context_ != nullptr && context_->txn_ != nullptr) {
                 context_->txn_->append_write_record(
                     new WriteRecord(WType::DELETE_TUPLE, tab_name_, rid, *rec));
+                // 写delete日志（记录被删除的整条记录，用于undo恢复）
+                if (enable_logging && context_->log_mgr_ != nullptr) {
+                    DeleteLogRecord log_rec(context_->txn_->get_transaction_id(), *rec, rid, tab_name_);
+                    log_rec.prev_lsn_ = context_->txn_->get_prev_lsn();
+                    lsn_t lsn = context_->log_mgr_->add_log_to_buffer(&log_rec);
+                    context_->txn_->set_prev_lsn(lsn);
+                    fh_->set_page_lsn(rid.page_no, lsn);
+                }
             }
+            sm_manager_->delete_index_entries(tab_name_, *rec, rid, context_);
             fh_->delete_record(rid, context_);
-        }
-        if (!tab_.indexes.empty()) {
-            sm_manager_->rebuild_indexes(tab_name_, context_);
         }
         return nullptr;
     }

@@ -118,6 +118,26 @@ target_link_options(test_oj_execution PRIVATE -Wl,--end-group)
 add_test(NAME test_oj_execution COMMAND test_oj_execution
     WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
 
+# -------------------- 故障恢复 OJ 测试 --------------------
+# Problem 10: WAL + redo/undo crash recovery
+add_executable(test_oj_recovery oj/test_oj_recovery.cpp)
+target_link_libraries(test_oj_recovery execution system record index storage lru_replacer parser planner analyze recovery common ${TEST_LIBS})
+target_include_directories(test_oj_recovery PRIVATE ${TEST_INCLUDES})
+target_link_options(test_oj_recovery PRIVATE -Wl,--start-group)
+target_link_options(test_oj_recovery PRIVATE -Wl,--end-group)
+add_test(NAME test_oj_recovery COMMAND test_oj_recovery
+    WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+
+# -------------------- 事务控制 OJ 测试 --------------------
+# Problem: explicit begin/commit/abort with and without indexes
+add_executable(test_oj_transaction oj/test_oj_transaction.cpp)
+target_link_libraries(test_oj_transaction execution system record index storage lru_replacer parser planner analyze recovery common ${TEST_LIBS})
+target_include_directories(test_oj_transaction PRIVATE ${TEST_INCLUDES})
+target_link_options(test_oj_transaction PRIVATE -Wl,--start-group)
+target_link_options(test_oj_transaction PRIVATE -Wl,--end-group)
+add_test(NAME test_oj_transaction COMMAND test_oj_transaction
+    WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+
 # ==================== 压力测试 (stress/) ====================
 
 # TODO: 从 src/unit_test.cpp 中剥离 BigStorageTest、BufferPoolManagerConcurrencyTest、

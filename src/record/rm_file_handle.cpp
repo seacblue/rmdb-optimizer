@@ -174,6 +174,8 @@ RmPageHandle RmFileHandle::create_new_page_handle() {
     page_handle.page_hdr->num_records = 0;
     page_handle.page_hdr->next_free_page_no = file_hdr_.first_free_page_no;
     Bitmap::init(page_handle.bitmap, file_hdr_.bitmap_size);
+    // 新页面初始page_lsn设为INVALID_LSN，避免与第一条日志(lsn=0)冲突
+    page_handle.page->set_page_lsn(INVALID_LSN);
 
     file_hdr_.num_pages++;
     file_hdr_.first_free_page_no = page_id.page_no;

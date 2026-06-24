@@ -12,13 +12,15 @@ add_subdirectory(common)
 add_subdirectory(replacer)
 add_subdirectory(transaction)
 add_subdirectory(recovery)
-add_subdirectory(test)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/CMakeLists.txt")
+    add_subdirectory(test)
+endif()
 
 
 target_link_libraries(parser execution pthread)
 
 add_executable(rmdb rmdb.cpp)
-target_link_libraries(rmdb parser execution pthread planner analyze)
+target_link_libraries(rmdb parser execution pthread planner analyze common)
 
 # unit_test
 add_executable(unit_test unit_test.cpp)

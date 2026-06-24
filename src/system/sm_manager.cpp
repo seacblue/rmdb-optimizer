@@ -62,6 +62,15 @@ std::string build_key_from_record(const IndexMeta &index, const char *rec_data) 
     return key;
 }
 
+bool same_key_for_index(const IndexMeta &index, const RmRecord &lhs, const RmRecord &rhs) {
+    for (const auto &col : index.cols) {
+        if (memcmp(lhs.data + col.offset, rhs.data + col.offset, col.len) != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
 }  // namespace
 
 /**
@@ -538,6 +547,109 @@ void SmManager::rebuild_indexes(const std::string& tab_name, Context* context) {
         }
         ihs_[ix_name] = std::move(ih);
         mem_indexes_[ix_name] = mem_index;
+    }
+}
+
+void SmManager::check_index_conflicts(const std::string &tab_name, const RmRecord &rec, const Rid *ignore_rid) {
+    TabMeta &tab = db_.get_table(tab_name);
+    for (const auto &index : tab.indexes) {
+        std::string ix_name = ix_manager_->get_index_name(tab_name, index.cols);
+        std::string key = build_key_from_record(index, rec.data);
+
+        auto mem_it = mem_indexes_.find(ix_name);
+        if (mem_it != mem_indexes_.end()) {
+            auto existing = mem_it->second->entries.find(key);
+            if (existing != mem_it->second->entries.end() &&
+                (ignore_rid == nullptr || existing->second != *ignore_rid)) {
+                throw UniqueConstraintError(ix_name);
+            }
+            continue;
+        }
+
+        auto ih_it = ihs_.find(ix_name);
+        if (ih_it != ihs_.end()) {
+            std::vector<Rid> result;
+            if (ih_it->second->get_value(key.data(), &result, nullptr) &&
+                (ignore_rid == nullptr || result.empty() || result[0] != *ignore_rid)) {
+                throw UniqueConstraintError(ix_name);
+            }
+        }
+    }
+}
+
+void SmManager::insert_index_entries(const std::string &tab_name, const RmRecord &rec, const Rid &rid, Context *context) {
+    TabMeta &tab = db_.get_table(tab_name);
+    for (const auto &index : tab.indexes) {
+        std::string ix_name = ix_manager_->get_index_name(tab_name, index.cols);
+        std::string key = build_key_from_record(index, rec.data);
+
+        auto mem_it = mem_indexes_.find(ix_name);
+        if (mem_it != mem_indexes_.end()) {
+            auto existing = mem_it->second->entries.find(key);
+            if (existing != mem_it->second->entries.end() && existing->second != rid) {
+                throw UniqueConstraintError(ix_name);
+            }
+            mem_it->second->entries[key] = rid;
+        }
+
+        auto ih_it = ihs_.find(ix_name);
+        if (ih_it != ihs_.end()) {
+            ih_it->second->insert_entry(key.data(), rid, context != nullptr ? context->txn_ : nullptr);
+        }
+    }
+}
+
+void SmManager::delete_index_entries(const std::string &tab_name, const RmRecord &rec, const Rid &rid, Context *context) {
+    TabMeta &tab = db_.get_table(tab_name);
+    for (const auto &index : tab.indexes) {
+        std::string ix_name = ix_manager_->get_index_name(tab_name, index.cols);
+        std::string key = build_key_from_record(index, rec.data);
+
+        auto mem_it = mem_indexes_.find(ix_name);
+        if (mem_it != mem_indexes_.end()) {
+            auto existing = mem_it->second->entries.find(key);
+            if (existing != mem_it->second->entries.end() && existing->second == rid) {
+                mem_it->second->entries.erase(existing);
+            }
+        }
+
+        auto ih_it = ihs_.find(ix_name);
+        if (ih_it != ihs_.end()) {
+            ih_it->second->delete_entry(key.data(), context != nullptr ? context->txn_ : nullptr);
+        }
+    }
+}
+
+void SmManager::update_index_entries(const std::string &tab_name, const RmRecord &old_rec, const RmRecord &new_rec,
+                                     const Rid &rid, Context *context) {
+    TabMeta &tab = db_.get_table(tab_name);
+    for (const auto &index : tab.indexes) {
+        if (same_key_for_index(index, old_rec, new_rec)) {
+            continue;
+        }
+
+        std::string ix_name = ix_manager_->get_index_name(tab_name, index.cols);
+        std::string old_key = build_key_from_record(index, old_rec.data);
+        std::string new_key = build_key_from_record(index, new_rec.data);
+
+        auto mem_it = mem_indexes_.find(ix_name);
+        if (mem_it != mem_indexes_.end()) {
+            auto existing = mem_it->second->entries.find(new_key);
+            if (existing != mem_it->second->entries.end() && existing->second != rid) {
+                throw UniqueConstraintError(ix_name);
+            }
+            auto old_it = mem_it->second->entries.find(old_key);
+            if (old_it != mem_it->second->entries.end() && old_it->second == rid) {
+                mem_it->second->entries.erase(old_it);
+            }
+            mem_it->second->entries[new_key] = rid;
+        }
+
+        auto ih_it = ihs_.find(ix_name);
+        if (ih_it != ihs_.end()) {
+            ih_it->second->delete_entry(old_key.data(), context != nullptr ? context->txn_ : nullptr);
+            ih_it->second->insert_entry(new_key.data(), rid, context != nullptr ? context->txn_ : nullptr);
+        }
     }
 }
 

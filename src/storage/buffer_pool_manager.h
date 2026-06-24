@@ -13,6 +13,7 @@ See the Mulan PSL v2 for more details. */
 #include <unistd.h>
 
 #include <cassert>
+#include <functional>
 #include <list>
 #include <unordered_map>
 #include <vector>
@@ -63,7 +64,11 @@ class BufferPoolManager {
      */
     static void mark_dirty(Page* page) { page->is_dirty_ = true; }
 
-   public: 
+    // WAL: 在脏页写盘之前调用，确保该页对应的日志（page_lsn）已经持久化到磁盘
+    // 回调形式注入，避免storage层硬依赖recovery层
+    void set_flush_log_callback(std::function<void(lsn_t)> cb) { flush_log_cb_ = std::move(cb); }
+
+   public:
     Page* fetch_page(PageId page_id);
 
     bool unpin_page(PageId page_id, bool is_dirty);
@@ -80,4 +85,13 @@ class BufferPoolManager {
     bool find_victim_page(frame_id_t* frame_id);
 
     void update_page(Page* page, PageId new_page_id, frame_id_t new_frame_id);
+
+    // WAL: 在把page写盘前，先确保其page_lsn对应的日志已落盘
+    void ensure_log_persisted(Page* page) {
+        if (flush_log_cb_) {
+            flush_log_cb_(page->get_page_lsn());
+        }
+    }
+
+    std::function<void(lsn_t)> flush_log_cb_;  // WAL日志刷盘回调
 };

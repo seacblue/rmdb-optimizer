@@ -97,5 +97,14 @@ class SmManager {
 
     void rebuild_indexes(const std::string& tab_name, Context* context);
 
+    void check_index_conflicts(const std::string &tab_name, const RmRecord &rec, const Rid *ignore_rid = nullptr);
+
+    void insert_index_entries(const std::string &tab_name, const RmRecord &rec, const Rid &rid, Context *context);
+
+    void delete_index_entries(const std::string &tab_name, const RmRecord &rec, const Rid &rid, Context *context);
+
+    void update_index_entries(const std::string &tab_name, const RmRecord &old_rec, const RmRecord &new_rec,
+                              const Rid &rid, Context *context);
+
     std::shared_ptr<MemoryIndex> get_memory_index(const std::string &tab_name, const std::vector<std::string> &col_names);
 };

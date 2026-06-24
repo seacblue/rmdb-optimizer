@@ -169,6 +169,8 @@ class DbMeta {
     /* 判断数据库中是否存在指定名称的表 */
     bool is_table(const std::string &tab_name) const { return tabs_.find(tab_name) != tabs_.end(); }
 
+    const std::map<std::string, TabMeta> &get_tables() const { return tabs_; }
+
     void SetTabMeta(const std::string &tab_name, const TabMeta &meta) {
         tabs_[tab_name] = meta;
     }

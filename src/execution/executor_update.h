@@ -15,6 +15,8 @@ See the Mulan PSL v2 for more details. */
 #include "executor_abstract.h"
 #include "index/ix.h"
 #include "system/sm.h"
+#include "recovery/log_manager.h"
+#include "common/config.h"
 
 class UpdateExecutor : public AbstractExecutor {
    private:
@@ -64,8 +66,7 @@ class UpdateExecutor : public AbstractExecutor {
             prepared.push_back({rid, std::move(rec), std::move(new_rec)});
         }
 
-        for (size_t j = 0; j < tab_.indexes.size(); ++j) {
-            auto &index = tab_.indexes[j];
+        for (auto &index : tab_.indexes) {
             std::unordered_set<std::string> new_keys;
 
             for (auto &item : prepared) {
@@ -105,16 +106,23 @@ class UpdateExecutor : public AbstractExecutor {
         }
 
         for (auto &item : prepared) {
+            sm_manager_->update_index_entries(tab_name_, *item.old_rec, *item.new_rec, item.rid, context_);
             if (context_ != nullptr && context_->txn_ != nullptr) {
                 context_->txn_->append_write_record(
                     new WriteRecord(WType::UPDATE_TUPLE, tab_name_, item.rid, *item.old_rec));
+                // 写update日志（记录旧值和新值，分别用于undo和redo）
+                if (enable_logging && context_->log_mgr_ != nullptr) {
+                    UpdateLogRecord log_rec(context_->txn_->get_transaction_id(), *item.old_rec,
+                                            *item.new_rec, item.rid, tab_name_);
+                    log_rec.prev_lsn_ = context_->txn_->get_prev_lsn();
+                    lsn_t lsn = context_->log_mgr_->add_log_to_buffer(&log_rec);
+                    context_->txn_->set_prev_lsn(lsn);
+                    fh_->set_page_lsn(item.rid.page_no, lsn);
+                }
             }
             fh_->update_record(item.rid, item.new_rec->data, context_);
         }
 
-        if (!tab_.indexes.empty()) {
-            sm_manager_->rebuild_indexes(tab_name_, context_);
-        }
         return nullptr;
     }
 
