@@ -40,14 +40,20 @@ struct Rid {
 };
 
 enum ColType {
-    TYPE_INT, TYPE_FLOAT, TYPE_STRING
+    TYPE_INT, TYPE_FLOAT, TYPE_STRING, TYPE_BIGINT, TYPE_DATETIME
+};
+
+enum AggType {
+    AGG_COUNT, AGG_MAX, AGG_MIN, AGG_SUM
 };
 
 inline std::string coltype2str(ColType type) {
     std::map<ColType, std::string> m = {
             {TYPE_INT,    "INT"},
             {TYPE_FLOAT,  "FLOAT"},
-            {TYPE_STRING, "STRING"}
+            {TYPE_STRING, "STRING"},
+            {TYPE_BIGINT, "BIGINT"},
+            {TYPE_DATETIME, "DATETIME"}
     };
     return m.at(type);
 }

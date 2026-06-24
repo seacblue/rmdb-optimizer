@@ -9,6 +9,8 @@ MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 See the Mulan PSL v2 for more details. */
 #pragma once
 
+#include "defs.h"
+
 #include <vector>
 #include <string>
 #include <memory>
@@ -19,7 +21,7 @@ enum JoinType {
 namespace ast {
 
 enum SvType {
-    SV_TYPE_INT, SV_TYPE_FLOAT, SV_TYPE_STRING
+    SV_TYPE_INT, SV_TYPE_FLOAT, SV_TYPE_STRING, SV_TYPE_BIGINT, SV_TYPE_DATETIME
 };
 
 enum SvCompOp {
@@ -37,10 +39,28 @@ struct TreeNode {
     virtual ~TreeNode() = default;  // enable polymorphism
 };
 
+struct Col;
+
 struct Help : public TreeNode {
 };
 
 struct ShowTables : public TreeNode {
+};
+
+struct ShowIndex : public TreeNode {
+    std::string tab_name;
+
+    ShowIndex(std::string tab_name_) : tab_name(std::move(tab_name_)) {}
+};
+
+struct AggFunc : public TreeNode {
+    AggType type;
+    bool is_star;
+    std::shared_ptr<Col> col;
+    std::string alias;
+
+    AggFunc(AggType type_, bool is_star_, std::shared_ptr<Col> col_, std::string alias_)
+        : type(type_), is_star(is_star_), col(std::move(col_)), alias(std::move(alias_)) {}
 };
 
 struct TxnBegin : public TreeNode {
@@ -116,9 +136,9 @@ struct Value : public Expr {
 };
 
 struct IntLit : public Value {
-    int val;
+    std::string val;
 
-    IntLit(int val_) : val(val_) {}
+    IntLit(std::string val_) : val(std::move(val_)) {}
 };
 
 struct FloatLit : public Value {
@@ -160,10 +180,10 @@ struct BinaryExpr : public TreeNode {
 
 struct OrderBy : public TreeNode
 {
-    std::shared_ptr<Col> cols;
+    std::shared_ptr<Col> col;
     OrderByDir orderby_dir;
-    OrderBy( std::shared_ptr<Col> cols_, OrderByDir orderby_dir_) :
-       cols(std::move(cols_)), orderby_dir(std::move(orderby_dir_)) {}
+    OrderBy(std::shared_ptr<Col> col_, OrderByDir orderby_dir_) :
+       col(std::move(col_)), orderby_dir(std::move(orderby_dir_)) {}
 };
 
 struct InsertStmt : public TreeNode {
@@ -206,22 +226,41 @@ struct JoinExpr : public TreeNode {
 
 struct SelectStmt : public TreeNode {
     std::vector<std::shared_ptr<Col>> cols;
+    std::vector<std::shared_ptr<AggFunc>> aggs;
     std::vector<std::string> tabs;
     std::vector<std::shared_ptr<BinaryExpr>> conds;
     std::vector<std::shared_ptr<JoinExpr>> jointree;
 
     
     bool has_sort;
-    std::shared_ptr<OrderBy> order;
+    bool has_aggs;
+    bool has_limit;
+    int limit_count;
+    std::vector<std::shared_ptr<OrderBy>> orders;
 
 
     SelectStmt(std::vector<std::shared_ptr<Col>> cols_,
                std::vector<std::string> tabs_,
                std::vector<std::shared_ptr<BinaryExpr>> conds_,
-               std::shared_ptr<OrderBy> order_) :
-            cols(std::move(cols_)), tabs(std::move(tabs_)), conds(std::move(conds_)), 
-            order(std::move(order_)) {
-                has_sort = (bool)order;
+               std::vector<std::shared_ptr<OrderBy>> orders_,
+               int limit_count_ = -1) :
+            cols(std::move(cols_)), tabs(std::move(tabs_)), conds(std::move(conds_)),
+            orders(std::move(orders_)), limit_count(limit_count_) {
+                has_sort = !orders.empty();
+                has_aggs = false;
+                has_limit = limit_count_ >= 0;
+            }
+
+    SelectStmt(std::vector<std::shared_ptr<AggFunc>> aggs_,
+               std::vector<std::string> tabs_,
+               std::vector<std::shared_ptr<BinaryExpr>> conds_,
+               std::vector<std::shared_ptr<OrderBy>> orders_,
+               int limit_count_ = -1) :
+            aggs(std::move(aggs_)), tabs(std::move(tabs_)), conds(std::move(conds_)),
+            orders(std::move(orders_)), limit_count(limit_count_) {
+                has_sort = !orders.empty();
+                has_aggs = true;
+                has_limit = limit_count_ >= 0;
             }
 };
 
@@ -257,6 +296,9 @@ struct SemValue {
     std::vector<std::shared_ptr<BinaryExpr>> sv_conds;
 
     std::shared_ptr<OrderBy> sv_orderby;
+    std::vector<std::shared_ptr<OrderBy>> sv_orderbys;
+    std::shared_ptr<AggFunc> sv_agg;
+    std::vector<std::shared_ptr<AggFunc>> sv_aggs;
 };
 
 extern std::shared_ptr<ast::TreeNode> parse_tree;

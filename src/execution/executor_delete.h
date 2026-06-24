@@ -37,23 +37,20 @@ class DeleteExecutor : public AbstractExecutor {
     }
 
     std::unique_ptr<RmRecord> Next() override {
+        if (context_ != nullptr && context_->lock_mgr_ != nullptr && context_->txn_ != nullptr) {
+            context_->lock_mgr_->lock_exclusive_on_table(context_->txn_, fh_->GetFd());
+        }
         // 遍历所有待删除的 Rid，逐条删除
         for (auto &rid : rids_) {
-            // 删除记录前，先删除对应的索引条目
             auto rec = fh_->get_record(rid, context_);
-            for (auto &index : tab_.indexes) {
-                auto ih = sm_manager_->ihs_.at(
-                    sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
-                char *key = new char[index.col_tot_len];
-                int offset = 0;
-                for (size_t i = 0; i < index.col_num; ++i) {
-                    memcpy(key + offset, rec->data + index.cols[i].offset, index.cols[i].len);
-                    offset += index.cols[i].len;
-                }
-                ih->delete_entry(key, context_->txn_);
-                delete[] key;
+            if (context_ != nullptr && context_->txn_ != nullptr) {
+                context_->txn_->append_write_record(
+                    new WriteRecord(WType::DELETE_TUPLE, tab_name_, rid, *rec));
             }
             fh_->delete_record(rid, context_);
+        }
+        if (!tab_.indexes.empty()) {
+            sm_manager_->rebuild_indexes(tab_name_, context_);
         }
         return nullptr;
     }

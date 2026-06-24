@@ -45,51 +45,17 @@ class SeqScanExecutor : public AbstractExecutor {
         fed_conds_ = conds_;
     }
 
-    // 比较两个值，返回比较结果：true 表示满足条件
     bool eval_cond(const char *rec_data, const Condition &cond) {
-        // 获取 lhs 列的元数据
         auto lhs_col = get_col(cols_, cond.lhs_col);
-        char *lhs_buf = const_cast<char *>(rec_data) + lhs_col->offset;
+        Value lhs_val = Value::from_raw(lhs_col->type, rec_data + lhs_col->offset, lhs_col->len);
 
         if (cond.is_rhs_val) {
-            // rhs 是常量值
-            char *rhs_buf = cond.rhs_val.raw->data;
-            return compare_value(lhs_buf, rhs_buf, lhs_col->type, cond.op, lhs_col->len);
-        } else {
-            // rhs 是列
-            auto rhs_col = get_col(cols_, cond.rhs_col);
-            char *rhs_buf = const_cast<char *>(rec_data) + rhs_col->offset;
-            return compare_value(lhs_buf, rhs_buf, lhs_col->type, cond.op, lhs_col->len);
+            return compare_by_op(compare_values(lhs_val, cond.rhs_val), cond.op);
         }
-    }
 
-    // 比较两个原始值
-    bool compare_value(const char *lhs, const char *rhs, ColType type, CompOp op, int len = 0) {
-        int cmp_result = 0;
-        if (type == TYPE_INT) {
-            int l = *(int *)lhs;
-            int r = *(int *)rhs;
-            if (l < r) cmp_result = -1;
-            else if (l > r) cmp_result = 1;
-            else cmp_result = 0;
-        } else if (type == TYPE_FLOAT) {
-            float l = *(float *)lhs;
-            float r = *(float *)rhs;
-            if (l < r) cmp_result = -1;
-            else if (l > r) cmp_result = 1;
-            else cmp_result = 0;
-        } else if (type == TYPE_STRING) {
-            cmp_result = strncmp(lhs, rhs, len);
-        }
-        switch (op) {
-            case OP_EQ: return cmp_result == 0;
-            case OP_NE: return cmp_result != 0;
-            case OP_LT: return cmp_result < 0;
-            case OP_GT: return cmp_result > 0;
-            case OP_LE: return cmp_result <= 0;
-            case OP_GE: return cmp_result >= 0;
-            default: return false;
-        }
+        auto rhs_col = get_col(cols_, cond.rhs_col);
+        Value rhs_val = Value::from_raw(rhs_col->type, rec_data + rhs_col->offset, rhs_col->len);
+        return compare_by_op(compare_values(lhs_val, rhs_val), cond.op);
     }
 
     // 检查记录是否满足所有条件
@@ -103,6 +69,9 @@ class SeqScanExecutor : public AbstractExecutor {
     }
 
     void beginTuple() override {
+        if (context_ != nullptr && context_->lock_mgr_ != nullptr && context_->txn_ != nullptr) {
+            context_->lock_mgr_->lock_shared_on_table(context_->txn_, fh_->GetFd());
+        }
         scan_ = std::make_unique<RmScan>(fh_);
         // 跳过不满足条件的记录
         while (!scan_->is_end()) {

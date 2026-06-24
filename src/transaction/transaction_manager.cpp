@@ -12,6 +12,31 @@ See the Mulan PSL v2 for more details. */
 #include "record/rm_file_handle.h"
 #include "system/sm_manager.h"
 
+namespace {
+
+void clear_write_set(const std::shared_ptr<std::deque<WriteRecord *>> &write_set) {
+    for (auto *write_record : *write_set) {
+        delete write_record;
+    }
+    write_set->clear();
+}
+
+void release_all_locks(Transaction *txn, LockManager *lock_manager) {
+    if (txn == nullptr || lock_manager == nullptr) {
+        return;
+    }
+    std::vector<LockDataId> lock_ids;
+    lock_ids.reserve(txn->get_lock_set()->size());
+    for (const auto &lock_id : *txn->get_lock_set()) {
+        lock_ids.push_back(lock_id);
+    }
+    for (const auto &lock_id : lock_ids) {
+        lock_manager->unlock(txn, lock_id);
+    }
+}
+
+}  // namespace
+
 std::unordered_map<txn_id_t, Transaction *> TransactionManager::txn_map = {};
 
 /**
@@ -41,7 +66,11 @@ Transaction * TransactionManager::begin(Transaction* txn, LogManager* log_manage
  * @param {LogManager*} log_manager 日志管理器指针
  */
 void TransactionManager::commit(Transaction* txn, LogManager* log_manager) {
-    // 更新事务状态为已提交
+    if (txn == nullptr) {
+        return;
+    }
+    clear_write_set(txn->get_write_set());
+    release_all_locks(txn, lock_manager_);
     txn->set_state(TransactionState::COMMITTED);
     // 从事务表中移除
     std::unique_lock<std::mutex> lock(latch_);
@@ -55,7 +84,41 @@ void TransactionManager::commit(Transaction* txn, LogManager* log_manager) {
  * @param {LogManager} *log_manager 日志管理器指针
  */
 void TransactionManager::abort(Transaction * txn, LogManager *log_manager) {
-    // 更新事务状态为已回滚
+    if (txn == nullptr) {
+        return;
+    }
+
+    auto write_set = txn->get_write_set();
+    std::unordered_set<std::string> touched_tables;
+    for (auto it = write_set->rbegin(); it != write_set->rend(); ++it) {
+        WriteRecord *write_record = *it;
+        touched_tables.insert(write_record->GetTableName());
+        auto fh_it = sm_manager_->fhs_.find(write_record->GetTableName());
+        if (fh_it == sm_manager_->fhs_.end()) {
+            continue;
+        }
+        RmFileHandle *fh = fh_it->second.get();
+        switch (write_record->GetWriteType()) {
+            case WType::INSERT_TUPLE:
+                fh->delete_record(write_record->GetRid(), nullptr);
+                break;
+            case WType::DELETE_TUPLE:
+                fh->insert_record(write_record->GetRid(), write_record->GetRecord().data);
+                break;
+            case WType::UPDATE_TUPLE:
+                fh->update_record(write_record->GetRid(), write_record->GetRecord().data, nullptr);
+                break;
+        }
+    }
+
+    for (const auto &tab_name : touched_tables) {
+        if (sm_manager_->db_.is_table(tab_name)) {
+            sm_manager_->rebuild_indexes(tab_name, nullptr);
+        }
+    }
+
+    clear_write_set(write_set);
+    release_all_locks(txn, lock_manager_);
     txn->set_state(TransactionState::ABORTED);
     // 从事务表中移除
     std::unique_lock<std::mutex> lock(latch_);

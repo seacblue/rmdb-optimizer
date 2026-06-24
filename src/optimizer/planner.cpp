@@ -22,16 +22,54 @@ See the Mulan PSL v2 for more details. */
 #include "index/ix.h"
 #include "record_printer.h"
 
-// 目前的索引匹配规则为：完全匹配索引字段，且全部为单点查询，不会自动调整where条件的顺序
 bool Planner::get_index_cols(std::string tab_name, std::vector<Condition> curr_conds, std::vector<std::string>& index_col_names) {
     index_col_names.clear();
-    for(auto& cond: curr_conds) {
-        if(cond.is_rhs_val && cond.op == OP_EQ && cond.lhs_col.tab_name.compare(tab_name) == 0)
-            index_col_names.push_back(cond.lhs_col.col_name);
+    TabMeta &tab = sm_manager_->db_.get_table(tab_name);
+    size_t best_prefix = 0;
+    size_t best_eq_prefix = 0;
+
+    for (const auto &index : tab.indexes) {
+        size_t prefix = 0;
+        size_t eq_prefix = 0;
+        for (const auto &col : index.cols) {
+            bool has_eq = false;
+            bool has_range = false;
+            for (const auto &cond : curr_conds) {
+                if (!cond.is_rhs_val) {
+                    continue;
+                }
+                if (cond.lhs_col.tab_name != tab_name || cond.lhs_col.col_name != col.name) {
+                    continue;
+                }
+                if (cond.op == OP_EQ) {
+                    has_eq = true;
+                    break;
+                }
+                if (cond.op == OP_LT || cond.op == OP_LE || cond.op == OP_GT || cond.op == OP_GE) {
+                    has_range = true;
+                }
+            }
+            if (has_eq) {
+                ++prefix;
+                ++eq_prefix;
+                continue;
+            }
+            if (has_range) {
+                ++prefix;
+            }
+            break;
+        }
+
+        if (prefix > best_prefix || (prefix == best_prefix && eq_prefix > best_eq_prefix)) {
+            best_prefix = prefix;
+            best_eq_prefix = eq_prefix;
+            index_col_names.clear();
+            for (const auto &col : index.cols) {
+                index_col_names.push_back(col.name);
+            }
+        }
     }
-    TabMeta& tab = sm_manager_->db_.get_table(tab_name);
-    if(tab.is_index(index_col_names)) return true;
-    return false;
+    return best_prefix > 0;
 }
 
 /**
@@ -252,7 +290,7 @@ std::shared_ptr<Plan> Planner::make_one_rel(std::shared_ptr<Query> query)
 std::shared_ptr<Plan> Planner::generate_sort_plan(std::shared_ptr<Query> query, std::shared_ptr<Plan> plan)
 {
     auto x = std::dynamic_pointer_cast<ast::SelectStmt>(query->parse);
-    if(!x->has_sort) {
+    if(!x->has_sort && !x->has_limit) {
         return plan;
     }
     std::vector<std::string> tables = query->tables;
@@ -262,13 +300,21 @@ std::shared_ptr<Plan> Planner::generate_sort_plan(std::shared_ptr<Query> query, 
         const auto &sel_tab_cols = sm_manager_->db_.get_table(sel_tab_name).cols;
         all_cols.insert(all_cols.end(), sel_tab_cols.begin(), sel_tab_cols.end());
     }
-    TabCol sel_col;
-    for (auto &col : all_cols) {
-        if(col.name.compare(x->order->cols->col_name) == 0 )
-        sel_col = {.tab_name = col.tab_name, .col_name = col.name};
+    std::vector<TabCol> sel_cols;
+    std::vector<bool> is_desc;
+    for (auto &order : x->orders) {
+        TabCol sel_col;
+        for (auto &col : all_cols) {
+            if(col.name.compare(order->col->col_name) == 0 ) {
+                sel_col = {.tab_name = col.tab_name, .col_name = col.name};
+                break;
+            }
+        }
+        sel_cols.push_back(sel_col);
+        is_desc.push_back(order->orderby_dir == ast::OrderBy_DESC);
     }
-    return std::make_shared<SortPlan>(T_Sort, std::move(plan), sel_col, 
-                                    x->order->orderby_dir == ast::OrderBy_DESC);
+    return std::make_shared<SortPlan>(T_Sort, std::move(plan), std::move(sel_cols),
+                                      std::move(is_desc), x->limit_count);
 }
 
 
@@ -284,10 +330,19 @@ std::shared_ptr<Plan> Planner::generate_select_plan(std::shared_ptr<Query> query
     query = logical_optimization(std::move(query), context);
 
     //物理优化
-    auto sel_cols = query->cols;
     std::shared_ptr<Plan> plannerRoot = physical_optimization(query, context);
-    plannerRoot = std::make_shared<ProjectionPlan>(T_Projection, std::move(plannerRoot), 
-                                                        std::move(sel_cols));
+    if (!query->aggs.empty()) {
+        std::vector<TabCol> out_cols;
+        for (const auto &agg : query->aggs) {
+            out_cols.push_back({"", agg.alias});
+        }
+        plannerRoot = std::make_shared<AggregatePlan>(T_Aggregate, std::move(plannerRoot),
+                                                      query->aggs, std::move(out_cols));
+    } else {
+        auto sel_cols = query->cols;
+        plannerRoot = std::make_shared<ProjectionPlan>(T_Projection, std::move(plannerRoot),
+                                                       std::move(sel_cols));
+    }
 
     return plannerRoot;
 }
@@ -370,6 +425,22 @@ std::shared_ptr<Plan> Planner::do_planner(std::shared_ptr<Query> query, Context 
         std::shared_ptr<Plan> projection = generate_select_plan(std::move(query), context);
         plannerRoot = std::make_shared<DMLPlan>(T_select, projection, std::string(), std::vector<Value>(),
                                                     std::vector<Condition>(), std::vector<SetClause>());
+    } else if (auto x = std::dynamic_pointer_cast<ast::ShowTables>(query->parse)) {
+        plannerRoot = std::make_shared<OtherPlan>(T_ShowTable, std::string());
+    } else if (auto x = std::dynamic_pointer_cast<ast::ShowIndex>(query->parse)) {
+        plannerRoot = std::make_shared<OtherPlan>(T_ShowIndex, x->tab_name);
+    } else if (auto x = std::dynamic_pointer_cast<ast::DescTable>(query->parse)) {
+        plannerRoot = std::make_shared<OtherPlan>(T_DescTable, x->tab_name);
+    } else if (auto x = std::dynamic_pointer_cast<ast::Help>(query->parse)) {
+        plannerRoot = std::make_shared<OtherPlan>(T_Help, std::string());
+    } else if (std::dynamic_pointer_cast<ast::TxnBegin>(query->parse)) {
+        plannerRoot = std::make_shared<OtherPlan>(T_Transaction_begin, std::string());
+    } else if (std::dynamic_pointer_cast<ast::TxnCommit>(query->parse)) {
+        plannerRoot = std::make_shared<OtherPlan>(T_Transaction_commit, std::string());
+    } else if (std::dynamic_pointer_cast<ast::TxnAbort>(query->parse)) {
+        plannerRoot = std::make_shared<OtherPlan>(T_Transaction_abort, std::string());
+    } else if (std::dynamic_pointer_cast<ast::TxnRollback>(query->parse)) {
+        plannerRoot = std::make_shared<OtherPlan>(T_Transaction_rollback, std::string());
     } else {
         throw InternalError("Unexpected AST root");
     }

@@ -23,6 +23,7 @@ typedef enum PlanTag{
     T_Invalid = 1,
     T_Help,
     T_ShowTable,
+    T_ShowIndex,
     T_DescTable,
     T_CreateTable,
     T_DropTable,
@@ -32,6 +33,7 @@ typedef enum PlanTag{
     T_Update,
     T_Delete,
     T_select,
+    T_Aggregate,
     T_Transaction_begin,
     T_Transaction_commit,
     T_Transaction_abort,
@@ -115,20 +117,40 @@ class ProjectionPlan : public Plan
         
 };
 
-class SortPlan : public Plan
+class AggregatePlan : public Plan
 {
     public:
-        SortPlan(PlanTag tag, std::shared_ptr<Plan> subplan, TabCol sel_col, bool is_desc)
+        AggregatePlan(PlanTag tag, std::shared_ptr<Plan> subplan, std::vector<AggregateDesc> aggs,
+                      std::vector<TabCol> sel_cols)
         {
             Plan::tag = tag;
             subplan_ = std::move(subplan);
-            sel_col_ = sel_col;
-            is_desc_ = is_desc;
+            aggs_ = std::move(aggs);
+            sel_cols_ = std::move(sel_cols);
+        }
+        ~AggregatePlan() {}
+        std::shared_ptr<Plan> subplan_;
+        std::vector<AggregateDesc> aggs_;
+        std::vector<TabCol> sel_cols_;
+};
+
+class SortPlan : public Plan
+{
+    public:
+        SortPlan(PlanTag tag, std::shared_ptr<Plan> subplan, std::vector<TabCol> sel_cols,
+                 std::vector<bool> is_desc, int limit_count)
+        {
+            Plan::tag = tag;
+            subplan_ = std::move(subplan);
+            sel_cols_ = std::move(sel_cols);
+            is_desc_ = std::move(is_desc);
+            limit_count_ = limit_count;
         }
         ~SortPlan(){}
         std::shared_ptr<Plan> subplan_;
-        TabCol sel_col_;
-        bool is_desc_;
+        std::vector<TabCol> sel_cols_;
+        std::vector<bool> is_desc_;
+        int limit_count_;
         
 };
 

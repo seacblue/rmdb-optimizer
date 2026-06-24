@@ -14,10 +14,55 @@ See the Mulan PSL v2 for more details. */
 #include <unistd.h>
 
 #include <fstream>
+#include <unordered_set>
 
 #include "index/ix.h"
 #include "record/rm.h"
 #include "record_printer.h"
+
+namespace {
+
+std::string format_output_row(const std::vector<std::string> &columns) {
+    std::string out = "|";
+    for (const auto &column : columns) {
+        out += " " + column + " |";
+    }
+    out += "\n";
+    return out;
+}
+
+void append_context_output(Context *context, const std::string &text) {
+    if (context == nullptr || context->data_send_ == nullptr || context->offset_ == nullptr) {
+        return;
+    }
+    if (context->ellipsis_ == false &&
+        *context->offset_ + static_cast<int>(text.size()) + RECORD_COUNT_LENGTH < BUFFER_LENGTH) {
+        memcpy(context->data_send_ + *(context->offset_), text.c_str(), text.size());
+        *(context->offset_) += static_cast<int>(text.size());
+    } else {
+        context->ellipsis_ = true;
+    }
+}
+
+MemoryIndexComparator make_mem_index_comparator(const IndexMeta &index) {
+    MemoryIndexComparator comp;
+    for (const auto &col : index.cols) {
+        comp.col_types.push_back(col.type);
+        comp.col_lens.push_back(col.len);
+    }
+    return comp;
+}
+
+std::string build_key_from_record(const IndexMeta &index, const char *rec_data) {
+    std::string key;
+    key.reserve(index.col_tot_len);
+    for (const auto &col : index.cols) {
+        key.append(rec_data + col.offset, col.len);
+    }
+    return key;
+}
+
+}  // namespace
 
 /**
  * @description: 判断是否为一个文件夹
@@ -99,6 +144,29 @@ void SmManager::open_db(const std::string& db_name) {
         auto &tab_name = entry.first;
         fhs_.emplace(tab_name, rm_manager_->open_file(tab_name));
     }
+    // 打开所有表的索引文件
+    for (auto &entry : db_.tabs_) {
+        auto &tab_name = entry.first;
+        auto &tab = entry.second;
+        for (auto &index : tab.indexes) {
+            std::string ix_name = ix_manager_->get_index_name(tab_name, index.cols);
+            if (disk_manager_->is_file(ix_name)) {
+                ihs_.emplace(ix_name, ix_manager_->open_index(tab_name, index.cols));
+            }
+            auto mem_index = std::make_shared<MemoryIndex>();
+            mem_index->meta = index;
+            mem_index->entries = std::map<std::string, Rid, MemoryIndexComparator>(make_mem_index_comparator(index));
+            RmFileHandle *fh = fhs_.at(tab_name).get();
+            RmScan scan(fh);
+            while (!scan.is_end()) {
+                Rid rid = scan.rid();
+                auto rec = fh->get_record(rid, nullptr);
+                mem_index->entries.emplace(build_key_from_record(index, rec->data), rid);
+                scan.next();
+            }
+            mem_indexes_[ix_name] = mem_index;
+        }
+    }
 }
 
 /**
@@ -116,8 +184,18 @@ void SmManager::flush_meta() {
 void SmManager::close_db() {
     // 刷新元数据
     flush_meta();
+    // 关闭所有索引句柄
+    for (auto &entry : ihs_) {
+        ix_manager_->close_index(entry.second.get());
+    }
+    ihs_.clear();
+    mem_indexes_.clear();
     // 关闭所有表的记录文件句柄
+    for (auto &entry : fhs_) {
+        rm_manager_->close_file(entry.second.get());
+    }
     fhs_.clear();
+    db_ = DbMeta();
     // 回到根目录
     if (chdir("..") < 0) {
         throw UnixError();
@@ -142,6 +220,30 @@ void SmManager::show_tables(Context* context) {
         outfile << "| " << tab.name << " |\n";
     }
     printer.print_separator(context);
+    outfile.close();
+}
+
+void SmManager::show_index(const std::string& tab_name, Context* context) {
+    TabMeta &tab = db_.get_table(tab_name);
+    if (tab.indexes.empty()) {
+        return;
+    }
+
+    std::fstream outfile;
+    outfile.open("output.txt", std::ios::out | std::ios::app);
+    for (const auto &index : tab.indexes) {
+        std::string cols = "(";
+        for (size_t i = 0; i < index.cols.size(); ++i) {
+            if (i > 0) {
+                cols += ",";
+            }
+            cols += index.cols[i].name;
+        }
+        cols += ")";
+        std::string line = format_output_row({tab.name, "unique", cols});
+        append_context_output(context, line);
+        outfile << line;
+    }
     outfile.close();
 }
 
@@ -208,8 +310,12 @@ void SmManager::create_table(const std::string& tab_name, const std::vector<ColD
  * @param {Context*} context
  */
 void SmManager::drop_table(const std::string& tab_name, Context* context) {
-    // 检查表是否存在，不存在则抛出异常（会被上层捕获并输出 failure）
     TabMeta &tab = db_.get_table(tab_name);
+    (void)tab;
+    auto saved_indexes = db_.tabs_[tab_name].indexes;
+    for (auto &index : saved_indexes) {
+        drop_index(tab_name, index.cols, context);
+    }
     // 先正确关闭表的记录文件句柄（刷盘并关闭fd），再从 map 中移除
     auto it = fhs_.find(tab_name);
     if (it != fhs_.end()) {
@@ -231,7 +337,79 @@ void SmManager::drop_table(const std::string& tab_name, Context* context) {
  * @param {Context*} context
  */
 void SmManager::create_index(const std::string& tab_name, const std::vector<std::string>& col_names, Context* context) {
-    
+    TabMeta &tab = db_.get_table(tab_name);
+    if (tab.is_index(col_names)) {
+        throw IndexExistsError(tab_name, col_names);
+    }
+
+    std::vector<ColMeta> index_cols;
+    for (auto &col_name : col_names) {
+        auto col_it = tab.get_col(col_name);
+        index_cols.push_back(*col_it);
+    }
+
+    int index_col_tot_len = 0;
+    for (auto &col : index_cols) {
+        index_col_tot_len += col.len;
+    }
+
+    ix_manager_->create_index(tab_name, index_cols);
+
+    std::string ix_name = ix_manager_->get_index_name(tab_name, index_cols);
+    auto ih = ix_manager_->open_index(tab_name, index_cols);
+
+    RmFileHandle *fh = fhs_.at(tab_name).get();
+    RmScan scan(fh);
+    std::unordered_set<std::string> seen_keys;
+    std::vector<std::pair<std::string, Rid>> entries_to_build;
+    while (!scan.is_end()) {
+        Rid rid = {.page_no = scan.rid().page_no, .slot_no = scan.rid().slot_no};
+        auto rec = fh->get_record(rid, context);
+        auto key_buf = std::make_unique<char[]>(index_col_tot_len);
+        int offset = 0;
+        for (auto &col : index_cols) {
+            memcpy(key_buf.get() + offset, rec->data + col.offset, col.len);
+            offset += col.len;
+        }
+        std::string key_str(key_buf.get(), key_buf.get() + index_col_tot_len);
+        if (seen_keys.find(key_str) != seen_keys.end()) {
+            ix_manager_->close_index(ih.get());
+            ix_manager_->destroy_index(tab_name, index_cols);
+            throw UniqueConstraintError(ix_name);
+        }
+        seen_keys.insert(key_str);
+        ih->insert_entry(key_buf.get(), rid, nullptr);
+        entries_to_build.emplace_back(key_str, rid);
+        scan.next();
+    }
+
+    for (auto &col : tab.cols) {
+        for (auto &col_name : col_names) {
+            if (col.name == col_name) {
+                col.index = true;
+            }
+        }
+    }
+
+    IndexMeta index_meta;
+    index_meta.tab_name = tab_name;
+    index_meta.col_tot_len = index_col_tot_len;
+    index_meta.col_num = static_cast<int>(col_names.size());
+    for (auto &col : index_cols) {
+        index_meta.cols.push_back(col);
+    }
+    tab.indexes.push_back(index_meta);
+
+    auto mem_index = std::make_shared<MemoryIndex>();
+    mem_index->meta = index_meta;
+    mem_index->entries = std::map<std::string, Rid, MemoryIndexComparator>(make_mem_index_comparator(index_meta));
+    for (auto &entry : entries_to_build) {
+        mem_index->entries.emplace(entry.first, entry.second);
+    }
+
+    ihs_.emplace(ix_name, std::move(ih));
+    mem_indexes_[ix_name] = mem_index;
+    flush_meta();
 }
 
 /**
@@ -241,7 +419,10 @@ void SmManager::create_index(const std::string& tab_name, const std::vector<std:
  * @param {Context*} context
  */
 void SmManager::drop_index(const std::string& tab_name, const std::vector<std::string>& col_names, Context* context) {
-    
+    TabMeta &tab = db_.get_table(tab_name);
+    auto index_it = tab.get_index_meta(col_names);
+    std::vector<ColMeta> index_cols = index_it->cols;
+    drop_index(tab_name, index_cols, context);
 }
 
 /**
@@ -251,5 +432,120 @@ void SmManager::drop_index(const std::string& tab_name, const std::vector<std::s
  * @param {Context*} context
  */
 void SmManager::drop_index(const std::string& tab_name, const std::vector<ColMeta>& cols, Context* context) {
-    
+    TabMeta &tab = db_.get_table(tab_name);
+    (void)context;
+
+    std::vector<std::string> col_names;
+    for (auto &col : cols) {
+        col_names.push_back(col.name);
+    }
+
+    tab.get_index_meta(col_names);
+
+    std::string ix_name = ix_manager_->get_index_name(tab_name, cols);
+    auto ih_it = ihs_.find(ix_name);
+    if (ih_it != ihs_.end()) {
+        ix_manager_->close_index(ih_it->second.get());
+        ihs_.erase(ih_it);
+    }
+    mem_indexes_.erase(ix_name);
+
+    ix_manager_->destroy_index(tab_name, cols);
+
+    auto &indexes = tab.indexes;
+    for (auto it = indexes.begin(); it != indexes.end(); ++it) {
+        if (it->col_num == static_cast<int>(cols.size())) {
+            bool match = true;
+            for (size_t i = 0; i < cols.size(); ++i) {
+                if (it->cols[i].name != cols[i].name) {
+                    match = false;
+                    break;
+                }
+            }
+            if (match) {
+                indexes.erase(it);
+                break;
+            }
+        }
+    }
+
+    for (auto &col : tab.cols) {
+        bool still_indexed = false;
+        for (const auto &index : tab.indexes) {
+            for (const auto &idx_col : index.cols) {
+                if (idx_col.name == col.name) {
+                    still_indexed = true;
+                    break;
+                }
+            }
+            if (still_indexed) {
+                break;
+            }
+        }
+        col.index = still_indexed;
+    }
+
+    flush_meta();
+}
+
+void SmManager::rebuild_indexes(const std::string& tab_name, Context* context) {
+    TabMeta &tab = db_.get_table(tab_name);
+    if (tab.indexes.empty()) {
+        return;
+    }
+
+    RmFileHandle *fh = fhs_.at(tab_name).get();
+    auto saved_indexes = tab.indexes;
+    for (const auto &index : saved_indexes) {
+        std::string ix_name = ix_manager_->get_index_name(tab_name, index.cols);
+        auto ih_it = ihs_.find(ix_name);
+        if (ih_it != ihs_.end()) {
+            ix_manager_->close_index(ih_it->second.get());
+            ihs_.erase(ih_it);
+        }
+        mem_indexes_.erase(ix_name);
+        if (disk_manager_->is_file(ix_name)) {
+            ix_manager_->destroy_index(tab_name, index.cols);
+        }
+
+        ix_manager_->create_index(tab_name, index.cols);
+        auto ih = ix_manager_->open_index(tab_name, index.cols);
+        auto mem_index = std::make_shared<MemoryIndex>();
+        mem_index->meta = index;
+        mem_index->entries = std::map<std::string, Rid, MemoryIndexComparator>(make_mem_index_comparator(index));
+
+        RmScan scan(fh);
+        std::unordered_set<std::string> seen_keys;
+        while (!scan.is_end()) {
+            Rid rid = {.page_no = scan.rid().page_no, .slot_no = scan.rid().slot_no};
+            auto rec = fh->get_record(rid, context);
+            auto key_buf = std::make_unique<char[]>(index.col_tot_len);
+            int offset = 0;
+            for (const auto &col : index.cols) {
+                memcpy(key_buf.get() + offset, rec->data + col.offset, col.len);
+                offset += col.len;
+            }
+            std::string key_str(key_buf.get(), key_buf.get() + index.col_tot_len);
+            if (seen_keys.find(key_str) != seen_keys.end()) {
+                ix_manager_->close_index(ih.get());
+                ix_manager_->destroy_index(tab_name, index.cols);
+                throw UniqueConstraintError(ix_name);
+            }
+            seen_keys.insert(key_str);
+            ih->insert_entry(key_buf.get(), rid, nullptr);
+            mem_index->entries.emplace(key_str, rid);
+            scan.next();
+        }
+        ihs_[ix_name] = std::move(ih);
+        mem_indexes_[ix_name] = mem_index;
+    }
+}
+
+std::shared_ptr<MemoryIndex> SmManager::get_memory_index(const std::string &tab_name, const std::vector<std::string> &col_names) {
+    std::string ix_name = ix_manager_->get_index_name(tab_name, col_names);
+    auto it = mem_indexes_.find(ix_name);
+    if (it == mem_indexes_.end()) {
+        throw IndexNotFoundError(tab_name, col_names);
+    }
+    return it->second;
 }

@@ -27,12 +27,13 @@ const char *help_info = "Supported SQL syntax:\n"
                    "  DROP TABLE table_name\n"
                    "  CREATE INDEX table_name (column_name)\n"
                    "  DROP INDEX table_name (column_name)\n"
+                   "  SHOW INDEX FROM table_name\n"
                    "  INSERT INTO table_name VALUES (value [, value ...])\n"
                    "  DELETE FROM table_name [WHERE where_clause]\n"
                    "  UPDATE table_name SET column_name = value [, column_name = value ...] [WHERE where_clause]\n"
                    "  SELECT selector FROM table_name [WHERE where_clause]\n"
                    "type:\n"
-                   "  {INT | FLOAT | CHAR(n)}\n"
+                   "  {INT | BIGINT | FLOAT | CHAR(n) | DATETIME}\n"
                    "where_clause:\n"
                    "  condition [AND condition ...]\n"
                    "condition:\n"
@@ -90,6 +91,11 @@ void QlManager::run_cmd_utility(std::shared_ptr<Plan> plan, txn_id_t *txn_id, Co
                 sm_manager_->show_tables(context);
                 break;
             }
+            case T_ShowIndex:
+            {
+                sm_manager_->show_index(x->tab_name_, context);
+                break;
+            }
             case T_DescTable:
             {
                 sm_manager_->desc_table(x->tab_name_, context);
@@ -105,18 +111,21 @@ void QlManager::run_cmd_utility(std::shared_ptr<Plan> plan, txn_id_t *txn_id, Co
             {
                 context->txn_ = txn_mgr_->get_transaction(*txn_id);
                 txn_mgr_->commit(context->txn_, context->log_mgr_);
+                *txn_id = INVALID_TXN_ID;
                 break;
             }    
             case T_Transaction_rollback:
             {
                 context->txn_ = txn_mgr_->get_transaction(*txn_id);
                 txn_mgr_->abort(context->txn_, context->log_mgr_);
+                *txn_id = INVALID_TXN_ID;
                 break;
             }    
             case T_Transaction_abort:
             {
                 context->txn_ = txn_mgr_->get_transaction(*txn_id);
                 txn_mgr_->abort(context->txn_, context->log_mgr_);
+                *txn_id = INVALID_TXN_ID;
                 break;
             }     
             default:
@@ -157,17 +166,8 @@ void QlManager::select_from(std::unique_ptr<AbstractExecutor> executorTreeRoot, 
         auto Tuple = executorTreeRoot->Next();
         std::vector<std::string> columns;
         for (auto &col : executorTreeRoot->cols()) {
-            std::string col_str;
             char *rec_buf = Tuple->data + col.offset;
-            if (col.type == TYPE_INT) {
-                col_str = std::to_string(*(int *)rec_buf);
-            } else if (col.type == TYPE_FLOAT) {
-                col_str = std::to_string(*(float *)rec_buf);
-            } else if (col.type == TYPE_STRING) {
-                col_str = std::string((char *)rec_buf, col.len);
-                col_str.resize(strlen(col_str.c_str()));
-            }
-            columns.push_back(col_str);
+            columns.push_back(Value::from_raw(col.type, rec_buf, col.len).debug_string());
         }
         // print record into buffer
         rec_printer.print_record(columns, context);

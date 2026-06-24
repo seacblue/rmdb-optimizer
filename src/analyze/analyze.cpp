@@ -10,6 +10,22 @@ See the Mulan PSL v2 for more details. */
 
 #include "analyze.h"
 
+#include <cmath>
+#include <cstdlib>
+#include <limits>
+
+namespace {
+
+bool is_numeric_compatible(ColType lhs, ColType rhs) {
+    return is_numeric_type(lhs) && is_numeric_type(rhs);
+}
+
+void cast_value_for_column(Value &value, ColType target_type, int target_len) {
+    coerce_value(value, target_type, target_len);
+}
+
+}  // namespace
+
 /**
  * @description: 分析器，进行语义分析和查询重写，需要检查不符合语义规定的部分
  * @param {shared_ptr<ast::TreeNode>} parse parser生成的结果集
@@ -38,10 +54,16 @@ std::shared_ptr<Query> Analyze::do_analyze(std::shared_ptr<ast::TreeNode> parse)
         std::vector<ColMeta> all_cols;
         get_all_cols(query->tables, all_cols);
         if (query->cols.empty()) {
-            // select all columns
-            for (auto &col : all_cols) {
-                TabCol sel_col = {.tab_name = col.tab_name, .col_name = col.name};
-                query->cols.push_back(sel_col);
+            if (x->has_aggs) {
+                for (auto &agg : x->aggs) {
+                    query->aggs.push_back(convert_agg(agg, all_cols));
+                }
+            } else {
+                // select all columns
+                for (auto &col : all_cols) {
+                    TabCol sel_col = {.tab_name = col.tab_name, .col_name = col.name};
+                    query->cols.push_back(sel_col);
+                }
             }
         } else {
             // infer table name from column name
@@ -66,21 +88,13 @@ std::shared_ptr<Query> Analyze::do_analyze(std::shared_ptr<ast::TreeNode> parse)
             set_clause.rhs = convert_sv_value(sv_set_clause->val);
             // 检查列是否存在
             auto col = tab.get_col(sv_set_clause->col_name);
-            // 检查类型是否匹配（允许 INT 和 FLOAT 之间的隐式转换）
             bool set_compatible = (col->type == set_clause.rhs.type) ||
-                                  (col->type == TYPE_INT && set_clause.rhs.type == TYPE_FLOAT) ||
-                                  (col->type == TYPE_FLOAT && set_clause.rhs.type == TYPE_INT);
+                                  is_numeric_compatible(col->type, set_clause.rhs.type) ||
+                                  (col->type == TYPE_DATETIME && set_clause.rhs.type == TYPE_STRING);
             if (!set_compatible) {
                 throw IncompatibleTypeError(coltype2str(col->type), coltype2str(set_clause.rhs.type));
             }
-            // 如果类型不同（INT vs FLOAT），需要做隐式类型转换
-            if (col->type == TYPE_FLOAT && set_clause.rhs.type == TYPE_INT) {
-                set_clause.rhs.set_float(static_cast<float>(set_clause.rhs.int_val));
-            } else if (col->type == TYPE_INT && set_clause.rhs.type == TYPE_FLOAT) {
-                set_clause.rhs.set_int(static_cast<int>(set_clause.rhs.float_val));
-            }
-            // 初始化 raw 值
-            set_clause.rhs.init_raw(col->len);
+            cast_value_for_column(set_clause.rhs, col->type, col->len);
             query->set_clauses.push_back(set_clause);
         }
         // 处理 where 条件
@@ -88,10 +102,16 @@ std::shared_ptr<Query> Analyze::do_analyze(std::shared_ptr<ast::TreeNode> parse)
         check_clause({x->tab_name}, query->conds);
 
     } else if (auto x = std::dynamic_pointer_cast<ast::DeleteStmt>(parse)) {
+        if (!sm_manager_->db_.is_table(x->tab_name)) {
+            throw TableNotFoundError(x->tab_name);
+        }
         //处理where条件
         get_clause(x->conds, query->conds);
         check_clause({x->tab_name}, query->conds);        
     } else if (auto x = std::dynamic_pointer_cast<ast::InsertStmt>(parse)) {
+        if (!sm_manager_->db_.is_table(x->tab_name)) {
+            throw TableNotFoundError(x->tab_name);
+        }
         // 处理insert 的values值
         for (auto &sv_val : x->vals) {
             query->values.push_back(convert_sv_value(sv_val));
@@ -178,25 +198,26 @@ void Analyze::check_clause(const std::vector<std::string> &tab_names, std::vecto
         ColType rhs_type;
         if (cond.is_rhs_val) {
             ColType val_type = cond.rhs_val.type;
-            // Implicit type conversion between INT and FLOAT
-            if (val_type == TYPE_INT && lhs_type == TYPE_FLOAT) {
-                cond.rhs_val.set_float(static_cast<float>(cond.rhs_val.int_val));
-            } else if (val_type == TYPE_FLOAT && lhs_type == TYPE_INT) {
-                cond.rhs_val.set_int(static_cast<int>(cond.rhs_val.float_val));
+            rhs_type = cond.rhs_val.type;
+            bool compatible = (lhs_type == rhs_type) ||
+                              is_numeric_compatible(lhs_type, rhs_type) ||
+                              (lhs_type == TYPE_DATETIME && rhs_type == TYPE_STRING);
+            if (!compatible) {
+                throw IncompatibleTypeError(coltype2str(lhs_type), coltype2str(rhs_type));
             }
-            cond.rhs_val.init_raw(lhs_col->len);
+            cast_value_for_column(cond.rhs_val, lhs_type, lhs_col->len);
             rhs_type = cond.rhs_val.type;
         } else {
             TabMeta &rhs_tab = sm_manager_->db_.get_table(cond.rhs_col.tab_name);
             auto rhs_col = rhs_tab.get_col(cond.rhs_col.col_name);
             rhs_type = rhs_col->type;
-        }
-        // Allow comparison between INT and FLOAT (implicit conversion)
-        bool compatible = (lhs_type == rhs_type) ||
-                          (lhs_type == TYPE_INT && rhs_type == TYPE_FLOAT) ||
-                          (lhs_type == TYPE_FLOAT && rhs_type == TYPE_INT);
-        if (!compatible) {
-            throw IncompatibleTypeError(coltype2str(lhs_type), coltype2str(rhs_type));
+            bool compatible = (lhs_type == rhs_type) ||
+                              is_numeric_compatible(lhs_type, rhs_type) ||
+                              (lhs_type == TYPE_DATETIME && rhs_type == TYPE_STRING) ||
+                              (lhs_type == TYPE_STRING && rhs_type == TYPE_DATETIME);
+            if (!compatible) {
+                throw IncompatibleTypeError(coltype2str(lhs_type), coltype2str(rhs_type));
+            }
         }
     }
 }
@@ -205,7 +226,7 @@ void Analyze::check_clause(const std::vector<std::string> &tab_names, std::vecto
 Value Analyze::convert_sv_value(const std::shared_ptr<ast::Value> &sv_val) {
     Value val;
     if (auto int_lit = std::dynamic_pointer_cast<ast::IntLit>(sv_val)) {
-        val.set_int(int_lit->val);
+        val = parse_integer_literal(int_lit->val);
     } else if (auto float_lit = std::dynamic_pointer_cast<ast::FloatLit>(sv_val)) {
         val.set_float(float_lit->val);
     } else if (auto str_lit = std::dynamic_pointer_cast<ast::StringLit>(sv_val)) {
@@ -222,4 +243,34 @@ CompOp Analyze::convert_sv_comp_op(ast::SvCompOp op) {
         {ast::SV_OP_GT, OP_GT}, {ast::SV_OP_LE, OP_LE}, {ast::SV_OP_GE, OP_GE},
     };
     return m.at(op);
+}
+
+AggregateDesc Analyze::convert_agg(const std::shared_ptr<ast::AggFunc> &agg, const std::vector<ColMeta> &all_cols) {
+    AggregateDesc out;
+    out.type = agg->type;
+    out.is_star = agg->is_star;
+    out.alias = agg->alias.empty() ? "agg" : agg->alias;
+
+    if (agg->is_star) {
+        if (agg->type != AGG_COUNT) {
+            throw IncompatibleTypeError("AGG(*)", "NON-COUNT");
+        }
+        return out;
+    }
+
+    out.col.tab_name = agg->col->tab_name;
+    out.col.col_name = agg->col->col_name;
+    out.col = check_column(all_cols, out.col);
+
+    auto it = std::find_if(all_cols.begin(), all_cols.end(), [&](const ColMeta &col) {
+        return col.tab_name == out.col.tab_name && col.name == out.col.col_name;
+    });
+    if (it == all_cols.end()) {
+        throw ColumnNotFoundError(out.col.tab_name + "." + out.col.col_name);
+    }
+
+    if (agg->type == AGG_SUM && !(it->type == TYPE_INT || it->type == TYPE_FLOAT || it->type == TYPE_BIGINT)) {
+        throw IncompatibleTypeError("SUM", coltype2str(it->type));
+    }
+    return out;
 }

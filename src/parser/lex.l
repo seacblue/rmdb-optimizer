@@ -77,6 +77,13 @@ single_op ";"|"("|")"|","|"*"|"="|">"|"<"|"."
 "INT" { return INT; }
 "CHAR" { return CHAR; }
 "FLOAT" { return FLOAT; }
+"BIGINT" { return BIGINT; }
+"DATETIME" { return DATETIME; }
+"COUNT" { return COUNT; }
+"MAX" { return MAX; }
+"MIN" { return MIN; }
+"SUM" { return SUM; }
+"AS" { return AS; }
 "INDEX" { return INDEX; }
 "AND" { return AND; }
 "JOIN" {return JOIN;}
@@ -84,6 +91,7 @@ single_op ";"|"("|")"|","|"*"|"="|">"|"<"|"."
 "HELP" { return HELP; }
 "ORDER" { return ORDER; }
 "BY" {  return BY;  }
+"LIMIT" { return LIMIT; }
 "ASC" { return ASC; }
     /* operators */
 ">=" { return GEQ; }
@@ -97,7 +105,7 @@ single_op ";"|"("|")"|","|"*"|"="|">"|"<"|"."
 }
     /* literals */
 {value_int} {
-    yylval->sv_int = atoi(yytext);
+    yylval->sv_str = yytext;
     return VALUE_INT;
 }
 {value_float} {

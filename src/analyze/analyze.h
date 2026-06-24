@@ -34,6 +34,8 @@ class Query{
     std::vector<SetClause> set_clauses;
     //insert 的values值
     std::vector<Value> values;
+    // aggregate items
+    std::vector<AggregateDesc> aggs;
 
     Query(){}
 
@@ -56,5 +58,6 @@ private:
     void check_clause(const std::vector<std::string> &tab_names, std::vector<Condition> &conds);
     Value convert_sv_value(const std::shared_ptr<ast::Value> &sv_val);
     CompOp convert_sv_comp_op(ast::SvCompOp op);
+    AggregateDesc convert_agg(const std::shared_ptr<ast::AggFunc> &agg, const std::vector<ColMeta> &all_cols);
 };
 
