@@ -9,15 +9,14 @@ MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 See the Mulan PSL v2 for more details. */
 
 #pragma once
-#include <unordered_map>
 #include <unordered_set>
-#include "analyze/analyze.h"
-#include "common/type_cast.h"
 #include "execution_defs.h"
 #include "execution_manager.h"
 #include "executor_abstract.h"
 #include "index/ix.h"
 #include "system/sm.h"
+#include "recovery/log_manager.h"
+#include "common/config.h"
 
 class UpdateExecutor : public AbstractExecutor {
    private:
@@ -42,94 +41,88 @@ class UpdateExecutor : public AbstractExecutor {
         context_ = context;
     }
     std::unique_ptr<RmRecord> Next() override {
-        if (rids_.empty()) return nullptr;
-        std::unordered_map<std::string, size_t> col_offset;
-        for (size_t i = 0; i < tab_.cols.size(); ++i) {
-            col_offset[tab_.cols[i].name] = i;
-            col_offset[tab_.cols[i].tab_name + "." + tab_.cols[i].name] = i;
+        if (context_ != nullptr && context_->lock_mgr_ != nullptr && context_->txn_ != nullptr) {
+            context_->lock_mgr_->lock_exclusive_on_table(context_->txn_, fh_->GetFd());
         }
-
         struct PreparedUpdate {
             Rid rid;
             std::unique_ptr<RmRecord> old_rec;
             std::unique_ptr<RmRecord> new_rec;
-            std::vector<std::string> old_keys;
-            std::vector<std::string> new_keys;
         };
 
         std::vector<PreparedUpdate> prepared;
         prepared.reserve(rids_.size());
-        std::vector<std::unordered_set<std::string>> seen_new_keys(tab_.indexes.size());
+        std::unordered_set<std::string> touched_rids;
 
         for (auto &rid : rids_) {
-            PreparedUpdate item;
-            item.rid = rid;
-            item.old_rec = fh_->get_record(rid, context_);
-            item.new_rec = std::make_unique<RmRecord>(*item.old_rec);
+            touched_rids.insert(std::to_string(rid.page_no) + "#" + std::to_string(rid.slot_no));
+            auto rec = fh_->get_record(rid, context_);
+            auto new_rec = std::make_unique<RmRecord>(*rec);
 
-            for (auto &clause : set_clauses_) {
-                auto it = get_col(tab_.cols, clause.lhs);
-                Value rhs_value = clause.rhs_expr != nullptr
-                    ? eval_set_expr(clause.rhs_expr, item.new_rec->data, tab_.cols, col_offset)
-                    : clause.rhs;
-                rhs_value = TypeCaster::cast_value(rhs_value, it->type, it->len);
-                rhs_value.init_raw(it->len);
-                memcpy(item.new_rec->data + it->offset, rhs_value.raw->data, it->len);
+            for (auto &set_clause : set_clauses_) {
+                auto col = tab_.get_col(set_clause.lhs.col_name);
+                memcpy(new_rec->data + col->offset, set_clause.rhs.raw->data, col->len);
             }
+            prepared.push_back({rid, std::move(rec), std::move(new_rec)});
+        }
 
-            for (size_t j = 0; j < tab_.indexes.size(); ++j) {
-                auto &index = tab_.indexes[j];
-                auto ih = sm_manager_->ihs_.at(
-                    sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
+        for (auto &index : tab_.indexes) {
+            std::unordered_set<std::string> new_keys;
 
-                std::string old_key;
-                std::string new_key;
-                old_key.reserve(index.col_tot_len);
-                new_key.reserve(index.col_tot_len);
-                for (size_t k = 0; k < (size_t)index.col_num; ++k) {
-                    old_key.append(item.old_rec->data + index.cols[k].offset, index.cols[k].len);
-                    new_key.append(item.new_rec->data + index.cols[k].offset, index.cols[k].len);
+            for (auto &item : prepared) {
+                auto key_buf = std::make_unique<char[]>(index.col_tot_len);
+                int offset = 0;
+                for (size_t k = 0; k < static_cast<size_t>(index.col_num); ++k) {
+                    memcpy(key_buf.get() + offset, item.new_rec->data + index.cols[k].offset, index.cols[k].len);
+                    offset += index.cols[k].len;
                 }
-                item.old_keys.push_back(old_key);
-                item.new_keys.push_back(new_key);
-
-                if (old_key != new_key) {
-                    if (!seen_new_keys[j].insert(new_key).second) {
-                        throw UniqueConstraintError(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols));
-                    }
-                    std::vector<Rid> result;
-                    if (ih->get_value(new_key.data(), &result, context_->txn_)) {
-                        throw UniqueConstraintError(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols));
-                    }
+                std::string key_str(key_buf.get(), key_buf.get() + index.col_tot_len);
+                if (!new_keys.insert(key_str).second) {
+                    throw UniqueConstraintError(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols));
                 }
             }
 
-            prepared.push_back(std::move(item));
+            RmScan scan(fh_);
+            while (!scan.is_end()) {
+                Rid current = {.page_no = scan.rid().page_no, .slot_no = scan.rid().slot_no};
+                std::string rid_tag = std::to_string(current.page_no) + "#" + std::to_string(current.slot_no);
+                if (touched_rids.find(rid_tag) != touched_rids.end()) {
+                    scan.next();
+                    continue;
+                }
+                auto rec = fh_->get_record(current, context_);
+                auto key_buf = std::make_unique<char[]>(index.col_tot_len);
+                int offset = 0;
+                for (size_t k = 0; k < static_cast<size_t>(index.col_num); ++k) {
+                    memcpy(key_buf.get() + offset, rec->data + index.cols[k].offset, index.cols[k].len);
+                    offset += index.cols[k].len;
+                }
+                std::string key_str(key_buf.get(), key_buf.get() + index.col_tot_len);
+                if (new_keys.find(key_str) != new_keys.end()) {
+                    throw UniqueConstraintError(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols));
+                }
+                scan.next();
+            }
         }
 
         for (auto &item : prepared) {
-            for (size_t j = 0; j < tab_.indexes.size(); ++j) {
-                auto &index = tab_.indexes[j];
-                auto ih = sm_manager_->ihs_.at(
-                    sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
-
-                if (item.old_keys[j] != item.new_keys[j]) {
-                    ih->delete_entry(item.old_keys[j].data(), context_->txn_);
+            sm_manager_->update_index_entries(tab_name_, *item.old_rec, *item.new_rec, item.rid, context_);
+            if (context_ != nullptr && context_->txn_ != nullptr) {
+                context_->txn_->append_write_record(
+                    new WriteRecord(WType::UPDATE_TUPLE, tab_name_, item.rid, *item.old_rec));
+                // 写update日志（记录旧值和新值，分别用于undo和redo）
+                if (enable_logging && context_->log_mgr_ != nullptr) {
+                    UpdateLogRecord log_rec(context_->txn_->get_transaction_id(), *item.old_rec,
+                                            *item.new_rec, item.rid, tab_name_);
+                    log_rec.prev_lsn_ = context_->txn_->get_prev_lsn();
+                    lsn_t lsn = context_->log_mgr_->add_log_to_buffer(&log_rec);
+                    context_->txn_->set_prev_lsn(lsn);
+                    fh_->set_page_lsn(item.rid.page_no, lsn);
                 }
             }
-
-            for (size_t j = 0; j < tab_.indexes.size(); ++j) {
-                auto &index = tab_.indexes[j];
-                auto ih = sm_manager_->ihs_.at(
-                    sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
-
-                if (item.old_keys[j] != item.new_keys[j]) {
-                    ih->insert_entry(item.new_keys[j].data(), item.rid, context_->txn_);
-                }
-            }
-
             fh_->update_record(item.rid, item.new_rec->data, context_);
         }
+
         return nullptr;
     }
 

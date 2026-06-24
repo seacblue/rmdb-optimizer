@@ -10,8 +10,21 @@ See the Mulan PSL v2 for more details. */
 
 #include "analyze.h"
 
-#include <climits>
-#include "common/type_cast.h"
+#include <cmath>
+#include <cstdlib>
+#include <limits>
+
+namespace {
+
+bool is_numeric_compatible(ColType lhs, ColType rhs) {
+    return is_numeric_type(lhs) && is_numeric_type(rhs);
+}
+
+void cast_value_for_column(Value &value, ColType target_type, int target_len) {
+    coerce_value(value, target_type, target_len);
+}
+
+}  // namespace
 
 /**
  * @description: 分析器，进行语义分析和查询重写，需要检查不符合语义规定的部分
@@ -25,7 +38,8 @@ std::shared_ptr<Query> Analyze::do_analyze(std::shared_ptr<ast::TreeNode> parse)
     {
         // 处理表名
         query->tables = std::move(x->tabs);
-        for (const auto &tab_name : query->tables) {
+        // 检查表是否存在
+        for (auto &tab_name : query->tables) {
             if (!sm_manager_->db_.is_table(tab_name)) {
                 throw TableNotFoundError(tab_name);
             }
@@ -40,10 +54,16 @@ std::shared_ptr<Query> Analyze::do_analyze(std::shared_ptr<ast::TreeNode> parse)
         std::vector<ColMeta> all_cols;
         get_all_cols(query->tables, all_cols);
         if (query->cols.empty()) {
-            // select all columns
-            for (auto &col : all_cols) {
-                TabCol sel_col = {.tab_name = col.tab_name, .col_name = col.name};
-                query->cols.push_back(sel_col);
+            if (x->has_aggs) {
+                for (auto &agg : x->aggs) {
+                    query->aggs.push_back(convert_agg(agg, all_cols));
+                }
+            } else {
+                // select all columns
+                for (auto &col : all_cols) {
+                    TabCol sel_col = {.tab_name = col.tab_name, .col_name = col.name};
+                    query->cols.push_back(sel_col);
+                }
             }
         } else {
             // infer table name from column name
@@ -55,35 +75,32 @@ std::shared_ptr<Query> Analyze::do_analyze(std::shared_ptr<ast::TreeNode> parse)
         get_clause(x->conds, query->conds);
         check_clause(query->tables, query->conds);
     } else if (auto x = std::dynamic_pointer_cast<ast::UpdateStmt>(parse)) {
+        // 检查表是否存在
         if (!sm_manager_->db_.is_table(x->tab_name)) {
             throw TableNotFoundError(x->tab_name);
         }
         query->tables = {x->tab_name};
-        std::vector<ColMeta> all_cols;
-        get_all_cols(query->tables, all_cols);
-        get_clause(x->conds, query->conds);
-        check_clause(query->tables, query->conds);
-
-        for (auto &sv_clause : x->set_clauses) {
-            SetClause clause;
-            clause.lhs = check_column(all_cols, {.tab_name = x->tab_name, .col_name = sv_clause->col_name});
-            clause.rhs_expr = sv_clause->rhs;
-            ColType rhs_type = resolve_expr_type(clause.rhs_expr, all_cols);
-
-            auto lhs_meta_it = sm_manager_->db_.get_table(clause.lhs.tab_name).get_col(clause.lhs.col_name);
-            bool numeric_compatible = TypeCaster::is_numeric(lhs_meta_it->type) && TypeCaster::is_numeric(rhs_type);
-            bool datetime_compatible = lhs_meta_it->type == TYPE_DATETIME &&
-                                       (rhs_type == TYPE_DATETIME || rhs_type == TYPE_STRING);
-            if (lhs_meta_it->type != rhs_type && !numeric_compatible && !datetime_compatible) {
-                throw IncompatibleTypeError(coltype2str(lhs_meta_it->type), coltype2str(rhs_type));
+        // 处理 set 子句
+        TabMeta &tab = sm_manager_->db_.get_table(x->tab_name);
+        for (auto &sv_set_clause : x->set_clauses) {
+            SetClause set_clause;
+            set_clause.lhs = {.tab_name = x->tab_name, .col_name = sv_set_clause->col_name};
+            set_clause.rhs = convert_sv_value(sv_set_clause->val);
+            // 检查列是否存在
+            auto col = tab.get_col(sv_set_clause->col_name);
+            bool set_compatible = (col->type == set_clause.rhs.type) ||
+                                  is_numeric_compatible(col->type, set_clause.rhs.type) ||
+                                  (col->type == TYPE_DATETIME && set_clause.rhs.type == TYPE_STRING);
+            if (!set_compatible) {
+                throw IncompatibleTypeError(coltype2str(col->type), coltype2str(set_clause.rhs.type));
             }
-
-            if (auto rhs_val = std::dynamic_pointer_cast<ast::Value>(sv_clause->rhs)) {
-                clause.rhs = TypeCaster::cast_value(convert_sv_value(rhs_val), lhs_meta_it->type, lhs_meta_it->len);
-                clause.rhs_expr = nullptr;
-            }
-            query->set_clauses.push_back(std::move(clause));
+            cast_value_for_column(set_clause.rhs, col->type, col->len);
+            query->set_clauses.push_back(set_clause);
         }
+        // 处理 where 条件
+        get_clause(x->conds, query->conds);
+        check_clause({x->tab_name}, query->conds);
+
     } else if (auto x = std::dynamic_pointer_cast<ast::DeleteStmt>(parse)) {
         if (!sm_manager_->db_.is_table(x->tab_name)) {
             throw TableNotFoundError(x->tab_name);
@@ -99,12 +116,6 @@ std::shared_ptr<Query> Analyze::do_analyze(std::shared_ptr<ast::TreeNode> parse)
         for (auto &sv_val : x->vals) {
             query->values.push_back(convert_sv_value(sv_val));
         }
-    } else if (auto x = std::dynamic_pointer_cast<ast::LoadStmt>(parse)) {
-        if (!sm_manager_->db_.is_table(x->tab_name)) {
-            throw TableNotFoundError(x->tab_name);
-        }
-        query->tables = {x->tab_name};
-        query->load_file = x->file_path;
     } else {
         // do nothing
     }
@@ -130,11 +141,16 @@ TabCol Analyze::check_column(const std::vector<ColMeta> &all_cols, TabCol target
         }
         target.tab_name = tab_name;
     } else {
-        auto pos = std::find_if(all_cols.begin(), all_cols.end(), [&](const ColMeta &col) {
-            return col.tab_name == target.tab_name && col.name == target.col_name;
-        });
-        if (pos == all_cols.end()) {
-            throw ColumnNotFoundError(target.tab_name + "." + target.col_name);
+        // Make sure target column exists
+        bool found = false;
+        for (auto &col : all_cols) {
+            if (col.tab_name == target.tab_name && col.name == target.col_name) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            throw ColumnNotFoundError(target.tab_name + '.' + target.col_name);
         }
     }
     return target;
@@ -160,9 +176,6 @@ void Analyze::get_clause(const std::vector<std::shared_ptr<ast::BinaryExpr>> &sv
         } else if (auto rhs_col = std::dynamic_pointer_cast<ast::Col>(expr->rhs)) {
             cond.is_rhs_val = false;
             cond.rhs_col = {.tab_name = rhs_col->tab_name, .col_name = rhs_col->col_name};
-        } else {
-            cond.is_rhs_val = true;
-            cond.rhs_val = eval_constant_expr(expr->rhs);
         }
         conds.push_back(cond);
     }
@@ -184,24 +197,27 @@ void Analyze::check_clause(const std::vector<std::string> &tab_names, std::vecto
         ColType lhs_type = lhs_col->type;
         ColType rhs_type;
         if (cond.is_rhs_val) {
+            ColType val_type = cond.rhs_val.type;
+            rhs_type = cond.rhs_val.type;
+            bool compatible = (lhs_type == rhs_type) ||
+                              is_numeric_compatible(lhs_type, rhs_type) ||
+                              (lhs_type == TYPE_DATETIME && rhs_type == TYPE_STRING);
+            if (!compatible) {
+                throw IncompatibleTypeError(coltype2str(lhs_type), coltype2str(rhs_type));
+            }
+            cast_value_for_column(cond.rhs_val, lhs_type, lhs_col->len);
             rhs_type = cond.rhs_val.type;
         } else {
             TabMeta &rhs_tab = sm_manager_->db_.get_table(cond.rhs_col.tab_name);
             auto rhs_col = rhs_tab.get_col(cond.rhs_col.col_name);
             rhs_type = rhs_col->type;
-        }
-        if (lhs_type != rhs_type) {
-            bool numeric_compatible = TypeCaster::is_numeric(lhs_type) && TypeCaster::is_numeric(rhs_type);
-            bool string_to_datetime = lhs_type == TYPE_DATETIME && rhs_type == TYPE_STRING;
-            if (!numeric_compatible && !string_to_datetime) {
+            bool compatible = (lhs_type == rhs_type) ||
+                              is_numeric_compatible(lhs_type, rhs_type) ||
+                              (lhs_type == TYPE_DATETIME && rhs_type == TYPE_STRING) ||
+                              (lhs_type == TYPE_STRING && rhs_type == TYPE_DATETIME);
+            if (!compatible) {
                 throw IncompatibleTypeError(coltype2str(lhs_type), coltype2str(rhs_type));
             }
-            if (cond.is_rhs_val && string_to_datetime) {
-                cond.rhs_val = TypeCaster::cast_value(cond.rhs_val, lhs_type, lhs_col->len);
-            }
-        }
-        if (cond.is_rhs_val && lhs_type == rhs_type) {
-            cond.rhs_val.init_raw(lhs_col->len);
         }
     }
 }
@@ -210,41 +226,15 @@ void Analyze::check_clause(const std::vector<std::string> &tab_names, std::vecto
 Value Analyze::convert_sv_value(const std::shared_ptr<ast::Value> &sv_val) {
     Value val;
     if (auto int_lit = std::dynamic_pointer_cast<ast::IntLit>(sv_val)) {
-        val = TypeCaster::parse_integer_literal(int_lit->val);
+        val = parse_integer_literal(int_lit->val);
     } else if (auto float_lit = std::dynamic_pointer_cast<ast::FloatLit>(sv_val)) {
-        val = Value::make_float(float_lit->val);
+        val.set_float(float_lit->val);
     } else if (auto str_lit = std::dynamic_pointer_cast<ast::StringLit>(sv_val)) {
-        val = Value::make_string(str_lit->val);
+        val.set_str(str_lit->val);
     } else {
         throw InternalError("Unexpected sv value type");
     }
     return val;
-}
-
-Value Analyze::eval_constant_expr(const std::shared_ptr<ast::Expr> &expr) {
-    if (auto rhs_val = std::dynamic_pointer_cast<ast::Value>(expr)) {
-        return convert_sv_value(rhs_val);
-    }
-    if (auto unary = std::dynamic_pointer_cast<ast::UnaryExpr>(expr)) {
-        return TypeCaster::negate_value(eval_constant_expr(unary->rhs));
-    }
-    if (auto arith = std::dynamic_pointer_cast<ast::ArithExpr>(expr)) {
-        Value lhs = eval_constant_expr(arith->lhs);
-        Value rhs = eval_constant_expr(arith->rhs);
-        switch (arith->op) {
-            case ast::SV_OP_ADD:
-                return TypeCaster::apply_arithmetic(lhs, rhs, '+');
-            case ast::SV_OP_SUB:
-                return TypeCaster::apply_arithmetic(lhs, rhs, '-');
-            case ast::SV_OP_MUL:
-                return TypeCaster::apply_arithmetic(lhs, rhs, '*');
-            case ast::SV_OP_DIV:
-                return TypeCaster::apply_arithmetic(lhs, rhs, '/');
-            default:
-                throw InternalError("Unexpected arithmetic operator in condition");
-        }
-    }
-    throw ColumnNotFoundError("");
 }
 
 CompOp Analyze::convert_sv_comp_op(ast::SvCompOp op) {
@@ -255,41 +245,32 @@ CompOp Analyze::convert_sv_comp_op(ast::SvCompOp op) {
     return m.at(op);
 }
 
-ColType Analyze::resolve_expr_type(const std::shared_ptr<ast::Expr> &expr, const std::vector<ColMeta> &all_cols) {
-    if (auto int_lit = std::dynamic_pointer_cast<ast::IntLit>(expr)) {
-        return TypeCaster::parse_integer_literal(int_lit->val).type;
-    }
-    if (std::dynamic_pointer_cast<ast::FloatLit>(expr)) {
-        return TYPE_FLOAT;
-    }
-    if (std::dynamic_pointer_cast<ast::StringLit>(expr)) {
-        return TYPE_STRING;
-    }
-    if (auto col = std::dynamic_pointer_cast<ast::Col>(expr)) {
-        TabCol resolved = check_column(all_cols, {.tab_name = col->tab_name, .col_name = col->col_name});
-        col->tab_name = resolved.tab_name;
-        col->col_name = resolved.col_name;
-        for (const auto &meta : all_cols) {
-            if (meta.tab_name == resolved.tab_name && meta.name == resolved.col_name) {
-                return meta.type;
-            }
+AggregateDesc Analyze::convert_agg(const std::shared_ptr<ast::AggFunc> &agg, const std::vector<ColMeta> &all_cols) {
+    AggregateDesc out;
+    out.type = agg->type;
+    out.is_star = agg->is_star;
+    out.alias = agg->alias.empty() ? "agg" : agg->alias;
+
+    if (agg->is_star) {
+        if (agg->type != AGG_COUNT) {
+            throw IncompatibleTypeError("AGG(*)", "NON-COUNT");
         }
-        throw ColumnNotFoundError(resolved.tab_name + "." + resolved.col_name);
+        return out;
     }
-    if (auto unary = std::dynamic_pointer_cast<ast::UnaryExpr>(expr)) {
-        ColType rhs_type = resolve_expr_type(unary->rhs, all_cols);
-        if (!TypeCaster::is_numeric(rhs_type)) {
-            throw IncompatibleTypeError(coltype2str(rhs_type), "NUMERIC");
-        }
-        return rhs_type;
+
+    out.col.tab_name = agg->col->tab_name;
+    out.col.col_name = agg->col->col_name;
+    out.col = check_column(all_cols, out.col);
+
+    auto it = std::find_if(all_cols.begin(), all_cols.end(), [&](const ColMeta &col) {
+        return col.tab_name == out.col.tab_name && col.name == out.col.col_name;
+    });
+    if (it == all_cols.end()) {
+        throw ColumnNotFoundError(out.col.tab_name + "." + out.col.col_name);
     }
-    if (auto arith = std::dynamic_pointer_cast<ast::ArithExpr>(expr)) {
-        ColType lhs_type = resolve_expr_type(arith->lhs, all_cols);
-        ColType rhs_type = resolve_expr_type(arith->rhs, all_cols);
-        if (!TypeCaster::is_numeric(lhs_type) || !TypeCaster::is_numeric(rhs_type)) {
-            throw IncompatibleTypeError(coltype2str(lhs_type), coltype2str(rhs_type));
-        }
-        return TypeCaster::common_numeric_type(lhs_type, rhs_type);
+
+    if (agg->type == AGG_SUM && !(it->type == TYPE_INT || it->type == TYPE_FLOAT || it->type == TYPE_BIGINT)) {
+        throw IncompatibleTypeError("SUM", coltype2str(it->type));
     }
-    throw InternalError("Unexpected set expression type");
+    return out;
 }

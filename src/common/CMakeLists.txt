@@ -1,4 +1,4 @@
 
 
-set(SOURCES config.cpp)
-add_library(common STATIC ${SOURCES})
+
+add_library(common STATIC config.cpp)

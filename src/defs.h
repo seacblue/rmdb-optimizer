@@ -12,7 +12,6 @@ See the Mulan PSL v2 for more details. */
 
 #include <iostream>
 #include <map>
-#include <string>
 
 // 此处重载了<<操作符，在ColMeta中进行了调用
 template<typename T, typename = typename std::enable_if<std::is_enum<T>::value, T>::type>
@@ -42,6 +41,10 @@ struct Rid {
 
 enum ColType {
     TYPE_INT, TYPE_FLOAT, TYPE_STRING, TYPE_BIGINT, TYPE_DATETIME
+};
+
+enum AggType {
+    AGG_COUNT, AGG_MAX, AGG_MIN, AGG_SUM
 };
 
 inline std::string coltype2str(ColType type) {

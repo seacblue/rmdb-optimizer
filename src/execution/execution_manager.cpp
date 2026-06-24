@@ -17,22 +17,8 @@ See the Mulan PSL v2 for more details. */
 #include "executor_projection.h"
 #include "executor_seq_scan.h"
 #include "executor_update.h"
-#include "common/type_cast.h"
 #include "index/ix.h"
 #include "record_printer.h"
-
-namespace {
-
-std::string format_output_row(const std::vector<std::string> &columns) {
-    std::string out = "|";
-    for (const auto &column : columns) {
-        out += " " + column + " |";
-    }
-    out += "\n";
-    return out;
-}
-
-}  // namespace
 
 const char *help_info = "Supported SQL syntax:\n"
                    "  command ;\n"
@@ -46,7 +32,6 @@ const char *help_info = "Supported SQL syntax:\n"
                    "  DELETE FROM table_name [WHERE where_clause]\n"
                    "  UPDATE table_name SET column_name = value [, column_name = value ...] [WHERE where_clause]\n"
                    "  SELECT selector FROM table_name [WHERE where_clause]\n"
-                   "  set output_file {on|off}\n"
                    "type:\n"
                    "  {INT | BIGINT | FLOAT | CHAR(n) | DATETIME}\n"
                    "where_clause:\n"
@@ -61,7 +46,7 @@ const char *help_info = "Supported SQL syntax:\n"
                    "  {* | column [, column ...]}\n";
 
 // 主要负责执行DDL语句
-void QlManager::run_multi_query(std::shared_ptr<Plan> plan, Context *context){
+void QlManager::run_mutli_query(std::shared_ptr<Plan> plan, Context *context){
     if (auto x = std::dynamic_pointer_cast<DDLPlan>(plan)) {
         switch(x->tag) {
             case T_CreateTable:
@@ -126,18 +111,21 @@ void QlManager::run_cmd_utility(std::shared_ptr<Plan> plan, txn_id_t *txn_id, Co
             {
                 context->txn_ = txn_mgr_->get_transaction(*txn_id);
                 txn_mgr_->commit(context->txn_, context->log_mgr_);
+                *txn_id = INVALID_TXN_ID;
                 break;
             }    
             case T_Transaction_rollback:
             {
                 context->txn_ = txn_mgr_->get_transaction(*txn_id);
                 txn_mgr_->abort(context->txn_, context->log_mgr_);
+                *txn_id = INVALID_TXN_ID;
                 break;
             }    
             case T_Transaction_abort:
             {
                 context->txn_ = txn_mgr_->get_transaction(*txn_id);
                 txn_mgr_->abort(context->txn_, context->log_mgr_);
+                *txn_id = INVALID_TXN_ID;
                 break;
             }     
             default:
@@ -163,11 +151,13 @@ void QlManager::select_from(std::unique_ptr<AbstractExecutor> executorTreeRoot, 
     rec_printer.print_record(captions, context);
     rec_printer.print_separator(context);
     // print header into file
-    std::unique_ptr<std::fstream> outfile;
-    if (g_output_file_on.load()) {
-        outfile = std::make_unique<std::fstream>(g_output_file_path, std::ios::out | std::ios::app);
-        *outfile << format_output_row(captions);
+    std::fstream outfile;
+    outfile.open("output.txt", std::ios::out | std::ios::app);
+    outfile << "|";
+    for(int i = 0; i < captions.size(); ++i) {
+        outfile << " " << captions[i] << " |";
     }
+    outfile << "\n";
 
     // Print records
     size_t num_rec = 0;
@@ -176,16 +166,20 @@ void QlManager::select_from(std::unique_ptr<AbstractExecutor> executorTreeRoot, 
         auto Tuple = executorTreeRoot->Next();
         std::vector<std::string> columns;
         for (auto &col : executorTreeRoot->cols()) {
-            columns.push_back(TypeCaster::format_raw_value(Tuple->data + col.offset, col.type, col.len));
+            char *rec_buf = Tuple->data + col.offset;
+            columns.push_back(Value::from_raw(col.type, rec_buf, col.len).debug_string());
         }
         // print record into buffer
         rec_printer.print_record(columns, context);
         // print record into file
-        if (outfile != nullptr) {
-            *outfile << format_output_row(columns);
+        outfile << "|";
+        for(int i = 0; i < columns.size(); ++i) {
+            outfile << " " << columns[i] << " |";
         }
+        outfile << "\n";
         num_rec++;
     }
+    outfile.close();
     // Print footer into buffer
     rec_printer.print_separator(context);
     // Print record count into buffer

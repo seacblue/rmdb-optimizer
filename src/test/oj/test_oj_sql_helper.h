@@ -122,6 +122,7 @@ class SqlHelper {
                     data_send[str.length()] = '\0';
                     offset = str.length();
                     txn_manager_->abort(context->txn_, log_manager_);
+                    txn_id_ = INVALID_TXN_ID;
                 } catch (RMDBError &e) {
                     memcpy(data_send, e.what(), e.get_msg_len());
                     data_send[e.get_msg_len()] = '\n';
@@ -136,7 +137,9 @@ class SqlHelper {
         }
 
         // 自动提交非显式事务
-        if (context->txn_->get_txn_mode() == false) {
+        if (context->txn_ != nullptr && context->txn_->get_txn_mode() == false &&
+            context->txn_->get_state() != TransactionState::COMMITTED &&
+            context->txn_->get_state() != TransactionState::ABORTED) {
             txn_manager_->commit(context->txn_, context->log_mgr_);
             txn_id_ = INVALID_TXN_ID;
         }

@@ -59,6 +59,10 @@ public:
         }
         auto *res = it->second;
         lock.unlock();
+        if (res == nullptr) {
+            return nullptr;
+        }
+
         return res;
     }
 

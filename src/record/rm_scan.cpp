@@ -11,79 +11,50 @@ See the Mulan PSL v2 for more details. */
 #include "rm_scan.h"
 #include "rm_file_handle.h"
 
-RmScan::RmScan(const RmFileHandle *file_handle, bool reverse) : file_handle_(file_handle), reverse_(reverse) {
-    const RmFileHdr &hdr = file_handle_->file_hdr_;
-    if (reverse_) {
-        rid_.page_no = hdr.num_pages - 1;
-        rid_.slot_no = hdr.num_records_per_page;
-    } else {
-        rid_.page_no = RM_FIRST_RECORD_PAGE;
-        rid_.slot_no = -1;
-    }
+/**
+ * @brief 初始化file_handle和rid
+ * @param file_handle
+ */
+RmScan::RmScan(const RmFileHandle *file_handle) : file_handle_(file_handle) {
+    rid_ = Rid{RM_FIRST_RECORD_PAGE, -1};
     next();
 }
 
+/**
+ * @brief 找到文件中下一个存放了记录的位置
+ */
 void RmScan::next() {
-    if (rid_.page_no == RM_NO_PAGE) return;
-
-    const RmFileHdr &hdr = file_handle_->file_hdr_;
-
-    if (reverse_) {
-        rid_.slot_no--;
-
-        while (rid_.page_no >= RM_FIRST_RECORD_PAGE) {
-            RmPageHandle ph = file_handle_->fetch_page_handle(rid_.page_no);
-
-            int prev_slot = Bitmap::prev_bit(true, ph.bitmap, rid_.slot_no + 1);
-
-            if (prev_slot >= 0) {
-                rid_.slot_no = prev_slot;
-                file_handle_->buffer_pool_manager_->unpin_page({file_handle_->fd_, rid_.page_no}, false);
-                return;
-            }
-
-            file_handle_->buffer_pool_manager_->unpin_page({file_handle_->fd_, rid_.page_no}, false);
-            rid_.page_no--;
-            rid_.slot_no = hdr.num_records_per_page;
-        }
-
-        rid_.page_no = RM_NO_PAGE;
-        rid_.slot_no = -1;
+    if (is_end()) {
         return;
     }
 
-    // === 正向扫描（原有逻辑） ===
-    if (rid_.page_no < RM_FIRST_RECORD_PAGE) {
-        rid_.page_no = RM_FIRST_RECORD_PAGE;
-        rid_.slot_no = -1;
-    }
-
-    rid_.slot_no++;
-
-    while (rid_.page_no < hdr.num_pages) {
-        RmPageHandle ph = file_handle_->fetch_page_handle(rid_.page_no);
-
-        int next_slot = Bitmap::next_bit(true, ph.bitmap, hdr.num_records_per_page, rid_.slot_no - 1);
-
-        if (next_slot < hdr.num_records_per_page) {
-            rid_.slot_no = next_slot;
-            file_handle_->buffer_pool_manager_->unpin_page({file_handle_->fd_, rid_.page_no}, false);
+    int page_no = rid_.page_no;
+    int slot_no = rid_.slot_no;
+    while (page_no < file_handle_->file_hdr_.num_pages) {
+        RmPageHandle page_handle = file_handle_->fetch_page_handle(page_no);
+        int next_slot = Bitmap::next_bit(true, page_handle.bitmap,
+                                         file_handle_->file_hdr_.num_records_per_page, slot_no);
+        file_handle_->buffer_pool_manager_->unpin_page(page_handle.page->get_page_id(), false);
+        if (next_slot < file_handle_->file_hdr_.num_records_per_page) {
+            rid_ = Rid{page_no, next_slot};
             return;
         }
-
-        file_handle_->buffer_pool_manager_->unpin_page({file_handle_->fd_, rid_.page_no}, false);
-        rid_.page_no++;
-        rid_.slot_no = -1;
+        page_no++;
+        slot_no = -1;
     }
-
-    rid_.page_no = RM_NO_PAGE;
-    rid_.slot_no = -1;
+    rid_ = Rid{file_handle_->file_hdr_.num_pages, -1};
 }
 
+/**
+ * @brief ​ 判断是否到达文件末尾
+ */
 bool RmScan::is_end() const {
-    return rid_.page_no == RM_NO_PAGE || rid_.page_no >= file_handle_->file_hdr_.num_pages;
+    return rid_.page_no >= file_handle_->file_hdr_.num_pages;
 }
 
+/**
+ * @brief RmScan内部存放的rid
+ */
 Rid RmScan::rid() const {
     return rid_;
 }

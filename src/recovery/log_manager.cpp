@@ -9,7 +9,6 @@ MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 See the Mulan PSL v2 for more details. */
 
 #include <cstring>
-#include <unistd.h>
 #include "log_manager.h"
 
 /**
@@ -18,11 +17,16 @@ See the Mulan PSL v2 for more details. */
  * @return {lsn_t} 返回该日志的日志记录号
  */
 lsn_t LogManager::add_log_to_buffer(LogRecord* log_record) {
-    std::lock_guard<std::mutex> lock(latch_);
-    if (log_buffer_.is_full(log_record->log_tot_len_)) {
-        flush_log_to_disk();
-    }
+    std::unique_lock<std::mutex> lock(latch_);
+    // 为该条日志分配全局递增的lsn
     log_record->lsn_ = global_lsn_++;
+    // 如果当前缓冲区放不下这条日志，先把缓冲区刷到磁盘
+    if (log_buffer_.is_full(log_record->log_tot_len_)) {
+        lock.unlock();
+        flush_log_to_disk();
+        lock.lock();
+    }
+    // 把日志序列化到缓冲区中
     log_record->serialize(log_buffer_.buffer_ + log_buffer_.offset_);
     log_buffer_.offset_ += log_record->log_tot_len_;
     return log_record->lsn_;
@@ -32,14 +36,13 @@ lsn_t LogManager::add_log_to_buffer(LogRecord* log_record) {
  * @description: 把日志缓冲区的内容刷到磁盘中，由于目前只设置了一个缓冲区，因此需要阻塞其他日志操作
  */
 void LogManager::flush_log_to_disk() {
-    if (log_buffer_.offset_ == 0) {
-        return;
+    std::unique_lock<std::mutex> lock(latch_);
+    if (log_buffer_.offset_ > 0) {
+        disk_manager_->write_log(log_buffer_.buffer_, log_buffer_.offset_);
+        // 已经写入磁盘的最后一条日志的lsn = 已分配的最大lsn
+        persist_lsn_ = global_lsn_.load() - 1;
+        log_buffer_.offset_ = 0;
+        memset(log_buffer_.buffer_, 0, sizeof(log_buffer_.buffer_));
     }
-    disk_manager_->write_log(log_buffer_.buffer_, log_buffer_.offset_);
-    if (disk_manager_->GetLogFd() != -1 && fsync(disk_manager_->GetLogFd()) < 0) {
-        throw UnixError();
-    }
-    persist_lsn_ = global_lsn_ - 1;
-    memset(log_buffer_.buffer_, 0, sizeof(log_buffer_.buffer_));
-    log_buffer_.offset_ = 0;
 }
+

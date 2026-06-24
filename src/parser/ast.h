@@ -9,6 +9,8 @@ MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 See the Mulan PSL v2 for more details. */
 #pragma once
 
+#include "defs.h"
+
 #include <vector>
 #include <string>
 #include <memory>
@@ -26,10 +28,6 @@ enum SvCompOp {
     SV_OP_EQ, SV_OP_NE, SV_OP_LT, SV_OP_GT, SV_OP_LE, SV_OP_GE
 };
 
-enum SvArithOp {
-    SV_OP_ADD, SV_OP_SUB, SV_OP_MUL, SV_OP_DIV, SV_OP_NEG
-};
-
 enum OrderByDir {
     OrderBy_DEFAULT,
     OrderBy_ASC,
@@ -41,6 +39,8 @@ struct TreeNode {
     virtual ~TreeNode() = default;  // enable polymorphism
 };
 
+struct Col;
+
 struct Help : public TreeNode {
 };
 
@@ -51,6 +51,16 @@ struct ShowIndex : public TreeNode {
     std::string tab_name;
 
     ShowIndex(std::string tab_name_) : tab_name(std::move(tab_name_)) {}
+};
+
+struct AggFunc : public TreeNode {
+    AggType type;
+    bool is_star;
+    std::shared_ptr<Col> col;
+    std::string alias;
+
+    AggFunc(AggType type_, bool is_star_, std::shared_ptr<Col> col_, std::string alias_)
+        : type(type_), is_star(is_star_), col(std::move(col_)), alias(std::move(alias_)) {}
 };
 
 struct TxnBegin : public TreeNode {
@@ -119,14 +129,6 @@ struct DropIndex : public TreeNode {
             tab_name(std::move(tab_name_)), col_names(std::move(col_names_)) {}
 };
 
-struct LoadStmt : public TreeNode {
-    std::string tab_name;
-    std::string file_path;
-
-    LoadStmt(std::string tab_name_, std::string file_path_) :
-            tab_name(std::move(tab_name_)), file_path(std::move(file_path_)) {}
-};
-
 struct Expr : public TreeNode {
 };
 
@@ -159,28 +161,12 @@ struct Col : public Expr {
             tab_name(std::move(tab_name_)), col_name(std::move(col_name_)) {}
 };
 
-struct ArithExpr : public Expr {
-    std::shared_ptr<Expr> lhs;
-    SvArithOp op;
-    std::shared_ptr<Expr> rhs;
-
-    ArithExpr(std::shared_ptr<Expr> lhs_, SvArithOp op_, std::shared_ptr<Expr> rhs_) :
-            lhs(std::move(lhs_)), op(op_), rhs(std::move(rhs_)) {}
-};
-
-struct UnaryExpr : public Expr {
-    SvArithOp op;
-    std::shared_ptr<Expr> rhs;
-
-    UnaryExpr(SvArithOp op_, std::shared_ptr<Expr> rhs_) : op(op_), rhs(std::move(rhs_)) {}
-};
-
 struct SetClause : public TreeNode {
     std::string col_name;
-    std::shared_ptr<Expr> rhs;
+    std::shared_ptr<Value> val;
 
-    SetClause(std::string col_name_, std::shared_ptr<Expr> rhs_) :
-            col_name(std::move(col_name_)), rhs(std::move(rhs_)) {}
+    SetClause(std::string col_name_, std::shared_ptr<Value> val_) :
+            col_name(std::move(col_name_)), val(std::move(val_)) {}
 };
 
 struct BinaryExpr : public TreeNode {
@@ -194,10 +180,10 @@ struct BinaryExpr : public TreeNode {
 
 struct OrderBy : public TreeNode
 {
-    std::shared_ptr<Col> cols;
+    std::shared_ptr<Col> col;
     OrderByDir orderby_dir;
-    OrderBy( std::shared_ptr<Col> cols_, OrderByDir orderby_dir_) :
-       cols(std::move(cols_)), orderby_dir(std::move(orderby_dir_)) {}
+    OrderBy(std::shared_ptr<Col> col_, OrderByDir orderby_dir_) :
+       col(std::move(col_)), orderby_dir(std::move(orderby_dir_)) {}
 };
 
 struct InsertStmt : public TreeNode {
@@ -240,28 +226,47 @@ struct JoinExpr : public TreeNode {
 
 struct SelectStmt : public TreeNode {
     std::vector<std::shared_ptr<Col>> cols;
+    std::vector<std::shared_ptr<AggFunc>> aggs;
     std::vector<std::string> tabs;
     std::vector<std::shared_ptr<BinaryExpr>> conds;
     std::vector<std::shared_ptr<JoinExpr>> jointree;
 
     
     bool has_sort;
-    std::shared_ptr<OrderBy> order;
+    bool has_aggs;
+    bool has_limit;
+    int limit_count;
+    std::vector<std::shared_ptr<OrderBy>> orders;
 
 
     SelectStmt(std::vector<std::shared_ptr<Col>> cols_,
                std::vector<std::string> tabs_,
                std::vector<std::shared_ptr<BinaryExpr>> conds_,
-               std::shared_ptr<OrderBy> order_) :
-            cols(std::move(cols_)), tabs(std::move(tabs_)), conds(std::move(conds_)), 
-            order(std::move(order_)) {
-                has_sort = (bool)order;
+               std::vector<std::shared_ptr<OrderBy>> orders_,
+               int limit_count_ = -1) :
+            cols(std::move(cols_)), tabs(std::move(tabs_)), conds(std::move(conds_)),
+            orders(std::move(orders_)), limit_count(limit_count_) {
+                has_sort = !orders.empty();
+                has_aggs = false;
+                has_limit = limit_count_ >= 0;
+            }
+
+    SelectStmt(std::vector<std::shared_ptr<AggFunc>> aggs_,
+               std::vector<std::string> tabs_,
+               std::vector<std::shared_ptr<BinaryExpr>> conds_,
+               std::vector<std::shared_ptr<OrderBy>> orders_,
+               int limit_count_ = -1) :
+            aggs(std::move(aggs_)), tabs(std::move(tabs_)), conds(std::move(conds_)),
+            orders(std::move(orders_)), limit_count(limit_count_) {
+                has_sort = !orders.empty();
+                has_aggs = true;
+                has_limit = limit_count_ >= 0;
             }
 };
 
 // Semantic value
 struct SemValue {
-    int64_t sv_int;
+    int sv_int;
     float sv_float;
     std::string sv_str;
     OrderByDir sv_orderby_dir;
@@ -291,6 +296,9 @@ struct SemValue {
     std::vector<std::shared_ptr<BinaryExpr>> sv_conds;
 
     std::shared_ptr<OrderBy> sv_orderby;
+    std::vector<std::shared_ptr<OrderBy>> sv_orderbys;
+    std::shared_ptr<AggFunc> sv_agg;
+    std::vector<std::shared_ptr<AggFunc>> sv_aggs;
 };
 
 extern std::shared_ptr<ast::TreeNode> parse_tree;

@@ -9,14 +9,15 @@ MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 See the Mulan PSL v2 for more details. */
 
 #pragma once
-#include <climits>
-#include <string>
-#include "common/type_cast.h"
+#include <memory>
+#include <vector>
 #include "execution_defs.h"
 #include "execution_manager.h"
 #include "executor_abstract.h"
 #include "index/ix.h"
 #include "system/sm.h"
+#include "recovery/log_manager.h"
+#include "common/config.h"
 
 class InsertExecutor : public AbstractExecutor {
    private:
@@ -40,55 +41,43 @@ class InsertExecutor : public AbstractExecutor {
         context_ = context;
     };
 
-    void beginTuple() override { done_ = false; }
-    void nextTuple() override { done_ = true; }
-    bool is_end() const override { return done_; }
-
     std::unique_ptr<RmRecord> Next() override {
-        if (done_) return nullptr;
-        done_ = true;
+        if (context_ != nullptr && context_->lock_mgr_ != nullptr && context_->txn_ != nullptr) {
+            context_->lock_mgr_->lock_exclusive_on_table(context_->txn_, fh_->GetFd());
+        }
         // Make record buffer
         RmRecord rec(fh_->get_file_hdr().record_size);
         for (size_t i = 0; i < values_.size(); i++) {
             auto &col = tab_.cols[i];
-            Value val = TypeCaster::cast_value(values_[i], col.type, col.len);
-            val.init_raw(col.len);
+            auto val = values_[i];
+            bool compatible = (col.type == val.type) ||
+                              (is_numeric_type(col.type) && val.is_numeric()) ||
+                              (col.type == TYPE_DATETIME && val.type == TYPE_STRING);
+            if (!compatible) {
+                throw IncompatibleTypeError(coltype2str(col.type), coltype2str(val.type));
+            }
+            coerce_value(val, col.type, col.len);
             memcpy(rec.data + col.offset, val.raw->data, col.len);
         }
+        sm_manager_->check_index_conflicts(tab_name_, rec);
 
-        for (size_t j = 0; j < tab_.indexes.size(); ++j) {
-            auto &index = tab_.indexes[j];
-            auto ih = sm_manager_->ihs_.at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
-            auto key = std::make_unique<char[]>(index.col_tot_len);
-            int offset = 0;
-            for (size_t k = 0; k < (size_t)index.col_num; ++k) {
-                memcpy(key.get() + offset, rec.data + index.cols[k].offset, index.cols[k].len);
-                offset += index.cols[k].len;
-            }
-            std::vector<Rid> result;
-            if (ih->get_value(key.get(), &result, context_->txn_)) {
-                throw UniqueConstraintError(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols));
-            }
-        }
         // Insert into record file
         rid_ = fh_->insert_record(rec.data, context_);
-        
-        // Insert into index
-        for(size_t j = 0; j < tab_.indexes.size(); ++j) {
-            auto& index = tab_.indexes[j];
-            auto ih = sm_manager_->ihs_.at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
-            auto key = std::make_unique<char[]>(index.col_tot_len);
-            int offset = 0;
-            for(size_t k = 0; k < (size_t)index.col_num; ++k) {
-                memcpy(key.get() + offset, rec.data + index.cols[k].offset, index.cols[k].len);
-                offset += index.cols[k].len;
+        if (context_ != nullptr && context_->txn_ != nullptr) {
+            context_->txn_->append_write_record(
+                new WriteRecord(WType::INSERT_TUPLE, tab_name_, rid_));
+            // 写insert日志，并把lsn刷到页面上（WAL: 先写日志缓冲，再修改页面元数据）
+            if (enable_logging && context_->log_mgr_ != nullptr) {
+                InsertLogRecord log_rec(context_->txn_->get_transaction_id(), rec, rid_, tab_name_);
+                log_rec.prev_lsn_ = context_->txn_->get_prev_lsn();
+                lsn_t lsn = context_->log_mgr_->add_log_to_buffer(&log_rec);
+                context_->txn_->set_prev_lsn(lsn);
+                fh_->set_page_lsn(rid_.page_no, lsn);
             }
-            ih->insert_entry(key.get(), rid_, context_->txn_);
         }
-        return std::make_unique<RmRecord>(rec);
+
+        sm_manager_->insert_index_entries(tab_name_, rec, rid_, context_);
+        return nullptr;
     }
     Rid &rid() override { return rid_; }
-
-   private:
-    bool done_ = false;
 };

@@ -47,16 +47,6 @@ class Bitmap {
         return max_n;
     }
 
-    /** @brief 找上一个为 0 or 1 的位（反向扫描用） */
-    static int prev_bit(bool bit, const char *bm, int curr) {
-        for (int i = curr - 1; i >= 0; i--) {
-            if (is_set(bm, i) == bit) {
-                return i;
-            }
-        }
-        return -1;
-    }
-
     // 找第一个为0 or 1的位
     static int first_bit(bool bit, const char *bm, int max_n) { return next_bit(bit, bm, max_n, -1); }
 

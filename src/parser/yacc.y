@@ -1,9 +1,9 @@
 %{
 #include "ast.h"
 #include "yacc.tab.h"
+#include <cstdint>
 #include <iostream>
 #include <memory>
-#include <cstdint>
 
 int yylex(YYSTYPE *yylval, YYLTYPE *yylloc);
 
@@ -23,12 +23,14 @@ using namespace ast;
 
 // keywords
 %token SHOW TABLES CREATE TABLE DROP DESC INSERT INTO VALUES DELETE FROM ASC ORDER BY
-WHERE UPDATE SET SELECT INT CHAR FLOAT BIGINT DATETIME INDEX AND JOIN EXIT HELP TXN_BEGIN TXN_COMMIT TXN_ABORT TXN_ROLLBACK ORDER_BY LOAD
+WHERE UPDATE SET SELECT INT CHAR FLOAT BIGINT DATETIME INDEX AND JOIN EXIT HELP TXN_BEGIN TXN_COMMIT TXN_ABORT TXN_ROLLBACK ORDER_BY
+COUNT MAX MIN SUM AS
+LIMIT
 // non-keywords
 %token LEQ NEQ GEQ T_EOF
 
 // type-specific tokens
-%token <sv_str> IDENTIFIER VALUE_STRING FILE_PATH VALUE_INT
+%token <sv_str> IDENTIFIER VALUE_STRING VALUE_INT
 %token <sv_float> VALUE_FLOAT
 
 // specify types for non-terminal symbol
@@ -40,20 +42,21 @@ WHERE UPDATE SET SELECT INT CHAR FLOAT BIGINT DATETIME INDEX AND JOIN EXIT HELP 
 %type <sv_expr> expr
 %type <sv_val> value
 %type <sv_vals> valueList
-%type <sv_str> tbName colName loadFile
+%type <sv_str> tbName colName
+%type <sv_str> opt_alias
 %type <sv_strs> tableList colNameList
 %type <sv_col> col
 %type <sv_cols> colList selector
+%type <sv_agg> aggItem
+%type <sv_aggs> aggList
 %type <sv_set_clause> setClause
 %type <sv_set_clauses> setClauses
 %type <sv_cond> condition
 %type <sv_conds> whereClause optWhereClause
-%type <sv_orderby>  order_clause opt_order_clause
+%type <sv_orderby>  order_clause
+%type <sv_orderbys> order_list opt_order_clause
 %type <sv_orderby_dir> opt_asc_desc
-
-%left '+' '-'
-%left '*' '/'
-%right UMINUS
+%type <sv_int> opt_limit_clause
 
 %%
 start:
@@ -148,17 +151,25 @@ dml:
     {
         $$ = std::make_shared<DeleteStmt>($3, $4);
     }
-    |   LOAD loadFile INTO tbName
-    {
-        $$ = std::make_shared<LoadStmt>($4, $2);
-    }
     |   UPDATE tbName SET setClauses optWhereClause
     {
         $$ = std::make_shared<UpdateStmt>($2, $4, $5);
     }
     |   SELECT selector FROM tableList optWhereClause opt_order_clause
     {
-        $$ = std::make_shared<SelectStmt>($2, $4, $5, $6);
+        $$ = std::make_shared<SelectStmt>($2, $4, $5, $6, -1);
+    }
+    |   SELECT selector FROM tableList optWhereClause opt_order_clause opt_limit_clause
+    {
+        $$ = std::make_shared<SelectStmt>($2, $4, $5, $6, $7);
+    }
+    |   SELECT aggList FROM tableList optWhereClause opt_order_clause
+    {
+        $$ = std::make_shared<SelectStmt>($2, $4, $5, $6, -1);
+    }
+    |   SELECT aggList FROM tableList optWhereClause opt_order_clause opt_limit_clause
+    {
+        $$ = std::make_shared<SelectStmt>($2, $4, $5, $6, $7);
     }
     ;
 
@@ -237,14 +248,6 @@ value:
     |   VALUE_STRING
     {
         $$ = std::make_shared<StringLit>($1);
-    }
-    |   '-' VALUE_INT
-    {
-        $$ = std::make_shared<IntLit>("-" + $2);
-    }
-    |   '-' VALUE_FLOAT
-    {
-        $$ = std::make_shared<FloatLit>(-$2);
     }
     ;
 
@@ -332,34 +335,6 @@ expr:
     {
         $$ = std::static_pointer_cast<Expr>($1);
     }
-    |   '(' expr ')'
-    {
-        $$ = $2;
-    }
-    |   expr '+' expr
-    {
-        $$ = std::make_shared<ArithExpr>($1, SV_OP_ADD, $3);
-    }
-    |   expr '-' expr
-    {
-        $$ = std::make_shared<ArithExpr>($1, SV_OP_SUB, $3);
-    }
-    |   expr '*' expr
-    {
-        $$ = std::make_shared<ArithExpr>($1, SV_OP_MUL, $3);
-    }
-    |   expr '/' expr
-    {
-        $$ = std::make_shared<ArithExpr>($1, SV_OP_DIV, $3);
-    }
-    |   '+' expr %prec UMINUS
-    {
-        $$ = $2;
-    }
-    |   '-' expr %prec UMINUS
-    {
-        $$ = std::make_shared<UnaryExpr>(SV_OP_NEG, $2);
-    }
     ;
 
 setClauses:
@@ -374,7 +349,7 @@ setClauses:
     ;
 
 setClause:
-        colName '=' expr
+        colName '=' value
     {
         $$ = std::make_shared<SetClause>($1, $3);
     }
@@ -386,6 +361,55 @@ selector:
         $$ = {};
     }
     |   colList
+    ;
+
+aggList:
+        aggItem
+    {
+        $$ = std::vector<std::shared_ptr<AggFunc>>{$1};
+    }
+    |   aggList ',' aggItem
+    {
+        $$.push_back($3);
+    }
+    ;
+
+aggItem:
+        COUNT '(' '*' ')' opt_alias
+    {
+        $$ = std::make_shared<AggFunc>(AGG_COUNT, true, nullptr, $5);
+    }
+    |   COUNT '(' col ')' opt_alias
+    {
+        $$ = std::make_shared<AggFunc>(AGG_COUNT, false, $3, $5);
+    }
+    |   MAX '(' col ')' opt_alias
+    {
+        $$ = std::make_shared<AggFunc>(AGG_MAX, false, $3, $5);
+    }
+    |   MIN '(' col ')' opt_alias
+    {
+        $$ = std::make_shared<AggFunc>(AGG_MIN, false, $3, $5);
+    }
+    |   SUM '(' col ')' opt_alias
+    {
+        $$ = std::make_shared<AggFunc>(AGG_SUM, false, $3, $5);
+    }
+    ;
+
+opt_alias:
+    AS IDENTIFIER
+    {
+        $$ = $2;
+    }
+    | IDENTIFIER
+    {
+        $$ = $1;
+    }
+    | /* epsilon */
+    {
+        $$ = "";
+    }
     ;
 
 tableList:
@@ -404,11 +428,22 @@ tableList:
     ;
 
 opt_order_clause:
-    ORDER BY order_clause      
+    ORDER BY order_list      
     { 
         $$ = $3; 
     }
-    |   /* epsilon */ { /* ignore*/ }
+    |   /* epsilon */ { $$ = {}; }
+    ;
+
+order_list:
+      order_clause
+    {
+        $$ = std::vector<std::shared_ptr<OrderBy>>{$1};
+    }
+    | order_list ',' order_clause
+    {
+        $$.push_back($3);
+    }
     ;
 
 order_clause:
@@ -424,9 +459,15 @@ opt_asc_desc:
     |       { $$ = OrderBy_DEFAULT; }
     ;    
 
-loadFile:
-        FILE_PATH
-    |   VALUE_STRING
+opt_limit_clause:
+    LIMIT VALUE_INT
+    {
+        $$ = std::stoi($2);
+    }
+    | /* epsilon */
+    {
+        $$ = -1;
+    }
     ;
 
 tbName: IDENTIFIER;

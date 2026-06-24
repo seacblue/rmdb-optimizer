@@ -56,6 +56,3 @@ static const std::string LOG_FILE_NAME = "db.log";
 static const std::string REPLACER_TYPE = "LRU";
 
 static const std::string DB_META_NAME = "db.meta";
-
-/** Full path to the output file. Set in main(). Default is "output.txt". */
-extern std::string g_output_file_path;

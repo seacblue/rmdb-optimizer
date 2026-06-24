@@ -32,8 +32,8 @@ typedef enum PlanTag{
     T_Insert,
     T_Update,
     T_Delete,
-    T_Load,
     T_select,
+    T_Aggregate,
     T_Transaction_begin,
     T_Transaction_commit,
     T_Transaction_abort,
@@ -117,20 +117,40 @@ class ProjectionPlan : public Plan
         
 };
 
-class SortPlan : public Plan
+class AggregatePlan : public Plan
 {
     public:
-        SortPlan(PlanTag tag, std::shared_ptr<Plan> subplan, TabCol sel_col, bool is_desc)
+        AggregatePlan(PlanTag tag, std::shared_ptr<Plan> subplan, std::vector<AggregateDesc> aggs,
+                      std::vector<TabCol> sel_cols)
         {
             Plan::tag = tag;
             subplan_ = std::move(subplan);
-            sel_col_ = sel_col;
-            is_desc_ = is_desc;
+            aggs_ = std::move(aggs);
+            sel_cols_ = std::move(sel_cols);
+        }
+        ~AggregatePlan() {}
+        std::shared_ptr<Plan> subplan_;
+        std::vector<AggregateDesc> aggs_;
+        std::vector<TabCol> sel_cols_;
+};
+
+class SortPlan : public Plan
+{
+    public:
+        SortPlan(PlanTag tag, std::shared_ptr<Plan> subplan, std::vector<TabCol> sel_cols,
+                 std::vector<bool> is_desc, int limit_count)
+        {
+            Plan::tag = tag;
+            subplan_ = std::move(subplan);
+            sel_cols_ = std::move(sel_cols);
+            is_desc_ = std::move(is_desc);
+            limit_count_ = limit_count;
         }
         ~SortPlan(){}
         std::shared_ptr<Plan> subplan_;
-        TabCol sel_col_;
-        bool is_desc_;
+        std::vector<TabCol> sel_cols_;
+        std::vector<bool> is_desc_;
+        int limit_count_;
         
 };
 
@@ -140,7 +160,7 @@ class DMLPlan : public Plan
     public:
         DMLPlan(PlanTag tag, std::shared_ptr<Plan> subplan,std::string tab_name,
                 std::vector<Value> values, std::vector<Condition> conds,
-                std::vector<SetClause> set_clauses, std::string file_path = "")
+                std::vector<SetClause> set_clauses)
         {
             Plan::tag = tag;
             subplan_ = std::move(subplan);
@@ -148,7 +168,6 @@ class DMLPlan : public Plan
             values_ = std::move(values);
             conds_ = std::move(conds);
             set_clauses_ = std::move(set_clauses);
-            file_path_ = std::move(file_path);
         }
         ~DMLPlan(){}
         std::shared_ptr<Plan> subplan_;
@@ -156,7 +175,6 @@ class DMLPlan : public Plan
         std::vector<Value> values_;
         std::vector<Condition> conds_;
         std::vector<SetClause> set_clauses_;
-        std::string file_path_;
 };
 
 // ddl语句, 包括create/drop table; create/drop index;

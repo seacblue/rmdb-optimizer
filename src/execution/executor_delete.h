@@ -14,6 +14,8 @@ See the Mulan PSL v2 for more details. */
 #include "executor_abstract.h"
 #include "index/ix.h"
 #include "system/sm.h"
+#include "recovery/log_manager.h"
+#include "common/config.h"
 
 class DeleteExecutor : public AbstractExecutor {
    private:
@@ -37,28 +39,25 @@ class DeleteExecutor : public AbstractExecutor {
     }
 
     std::unique_ptr<RmRecord> Next() override {
-        if (rids_.empty()) return nullptr;
-
+        if (context_ != nullptr && context_->lock_mgr_ != nullptr && context_->txn_ != nullptr) {
+            context_->lock_mgr_->lock_exclusive_on_table(context_->txn_, fh_->GetFd());
+        }
+        // 遍历所有待删除的 Rid，逐条删除
         for (auto &rid : rids_) {
-            // 读取记录
             auto rec = fh_->get_record(rid, context_);
-
-            // 删除所有相关索引项
-            for (size_t j = 0; j < tab_.indexes.size(); ++j) {
-                auto &index = tab_.indexes[j];
-                auto ih = sm_manager_->ihs_.at(
-                    sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
-
-                auto key = std::make_unique<char[]>(index.col_tot_len);
-                int offset = 0;
-                for (size_t k = 0; k < (size_t)index.col_num; ++k) {
-                    memcpy(key.get() + offset, rec->data + index.cols[k].offset, index.cols[k].len);
-                    offset += index.cols[k].len;
+            if (context_ != nullptr && context_->txn_ != nullptr) {
+                context_->txn_->append_write_record(
+                    new WriteRecord(WType::DELETE_TUPLE, tab_name_, rid, *rec));
+                // 写delete日志（记录被删除的整条记录，用于undo恢复）
+                if (enable_logging && context_->log_mgr_ != nullptr) {
+                    DeleteLogRecord log_rec(context_->txn_->get_transaction_id(), *rec, rid, tab_name_);
+                    log_rec.prev_lsn_ = context_->txn_->get_prev_lsn();
+                    lsn_t lsn = context_->log_mgr_->add_log_to_buffer(&log_rec);
+                    context_->txn_->set_prev_lsn(lsn);
+                    fh_->set_page_lsn(rid.page_no, lsn);
                 }
-                ih->delete_entry(key.get(), context_->txn_);
             }
-
-            // 删除记录
+            sm_manager_->delete_index_entries(tab_name_, *rec, rid, context_);
             fh_->delete_record(rid, context_);
         }
         return nullptr;

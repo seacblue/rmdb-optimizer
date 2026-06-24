@@ -68,9 +68,9 @@ class RmFileHandle {
     /* 判断指定位置上是否已经存在一条记录，通过Bitmap来判断 */
     bool is_record(const Rid &rid) const {
         RmPageHandle page_handle = fetch_page_handle(rid.page_no);
-        bool ret = Bitmap::is_set(page_handle.bitmap, rid.slot_no);
-        buffer_pool_manager_->unpin_page({fd_, rid.page_no}, false);
-        return ret;
+        bool exists = Bitmap::is_set(page_handle.bitmap, rid.slot_no);  // page的slot_no位置上是否有record
+        buffer_pool_manager_->unpin_page(page_handle.page->get_page_id(), false);
+        return exists;
     }
 
     std::unique_ptr<RmRecord> get_record(const Rid &rid, Context *context) const;
@@ -86,6 +86,27 @@ class RmFileHandle {
     RmPageHandle create_new_page_handle();
 
     RmPageHandle fetch_page_handle(int page_no) const;
+
+    // 设置指定记录页面的page_lsn（用于WAL与故障恢复），并标记为脏页
+    void set_page_lsn(int page_no, lsn_t lsn) {
+        if (page_no < RM_FIRST_RECORD_PAGE || page_no >= file_hdr_.num_pages) {
+            return;
+        }
+        RmPageHandle page_handle = fetch_page_handle(page_no);
+        page_handle.page->set_page_lsn(lsn);
+        buffer_pool_manager_->unpin_page(page_handle.page->get_page_id(), true);
+    }
+
+    // 获取指定记录页面的page_lsn
+    lsn_t get_page_lsn(int page_no) const {
+        if (page_no < RM_FIRST_RECORD_PAGE || page_no >= file_hdr_.num_pages) {
+            return INVALID_LSN;
+        }
+        RmPageHandle page_handle = fetch_page_handle(page_no);
+        lsn_t lsn = page_handle.page->get_page_lsn();
+        buffer_pool_manager_->unpin_page(page_handle.page->get_page_id(), false);
+        return lsn;
+    }
 
    private:
     RmPageHandle create_page_handle();

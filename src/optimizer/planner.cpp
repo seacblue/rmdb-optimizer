@@ -274,7 +274,7 @@ std::shared_ptr<Plan> Planner::make_one_rel(std::shared_ptr<Query> query)
         scantbl[0] = 1;
     }
 
-    //连接剩余表
+    //连接剩余表（保持已连接的表在左子节点，新表在右子节点）
     for (size_t i = 0; i < tables.size(); i++) {
         if(scantbl[i] == -1) {
             table_join_executors = std::make_shared<JoinPlan>(T_NestLoop, std::move(table_join_executors),
@@ -290,7 +290,7 @@ std::shared_ptr<Plan> Planner::make_one_rel(std::shared_ptr<Query> query)
 std::shared_ptr<Plan> Planner::generate_sort_plan(std::shared_ptr<Query> query, std::shared_ptr<Plan> plan)
 {
     auto x = std::dynamic_pointer_cast<ast::SelectStmt>(query->parse);
-    if(!x->has_sort) {
+    if(!x->has_sort && !x->has_limit) {
         return plan;
     }
     std::vector<std::string> tables = query->tables;
@@ -300,13 +300,21 @@ std::shared_ptr<Plan> Planner::generate_sort_plan(std::shared_ptr<Query> query, 
         const auto &sel_tab_cols = sm_manager_->db_.get_table(sel_tab_name).cols;
         all_cols.insert(all_cols.end(), sel_tab_cols.begin(), sel_tab_cols.end());
     }
-    TabCol sel_col;
-    for (auto &col : all_cols) {
-        if(col.name.compare(x->order->cols->col_name) == 0 )
-        sel_col = {.tab_name = col.tab_name, .col_name = col.name};
+    std::vector<TabCol> sel_cols;
+    std::vector<bool> is_desc;
+    for (auto &order : x->orders) {
+        TabCol sel_col;
+        for (auto &col : all_cols) {
+            if(col.name.compare(order->col->col_name) == 0 ) {
+                sel_col = {.tab_name = col.tab_name, .col_name = col.name};
+                break;
+            }
+        }
+        sel_cols.push_back(sel_col);
+        is_desc.push_back(order->orderby_dir == ast::OrderBy_DESC);
     }
-    return std::make_shared<SortPlan>(T_Sort, std::move(plan), sel_col, 
-                                    x->order->orderby_dir == ast::OrderBy_DESC);
+    return std::make_shared<SortPlan>(T_Sort, std::move(plan), std::move(sel_cols),
+                                      std::move(is_desc), x->limit_count);
 }
 
 
@@ -322,10 +330,19 @@ std::shared_ptr<Plan> Planner::generate_select_plan(std::shared_ptr<Query> query
     query = logical_optimization(std::move(query), context);
 
     //物理优化
-    auto sel_cols = query->cols;
     std::shared_ptr<Plan> plannerRoot = physical_optimization(query, context);
-    plannerRoot = std::make_shared<ProjectionPlan>(T_Projection, std::move(plannerRoot), 
-                                                        std::move(sel_cols));
+    if (!query->aggs.empty()) {
+        std::vector<TabCol> out_cols;
+        for (const auto &agg : query->aggs) {
+            out_cols.push_back({"", agg.alias});
+        }
+        plannerRoot = std::make_shared<AggregatePlan>(T_Aggregate, std::move(plannerRoot),
+                                                      query->aggs, std::move(out_cols));
+    } else {
+        auto sel_cols = query->cols;
+        plannerRoot = std::make_shared<ProjectionPlan>(T_Projection, std::move(plannerRoot),
+                                                       std::move(sel_cols));
+    }
 
     return plannerRoot;
 }
@@ -361,10 +378,6 @@ std::shared_ptr<Plan> Planner::do_planner(std::shared_ptr<Query> query, Context 
         // insert;
         plannerRoot = std::make_shared<DMLPlan>(T_Insert, std::shared_ptr<Plan>(),  x->tab_name,  
                                                     query->values, std::vector<Condition>(), std::vector<SetClause>());
-    } else if (auto x = std::dynamic_pointer_cast<ast::LoadStmt>(query->parse)) {
-        plannerRoot = std::make_shared<DMLPlan>(T_Load, std::shared_ptr<Plan>(), x->tab_name,
-                                                std::vector<Value>(), std::vector<Condition>(),
-                                                std::vector<SetClause>(), query->load_file);
     } else if (auto x = std::dynamic_pointer_cast<ast::DeleteStmt>(query->parse)) {
         // delete;
         // 生成表扫描方式

@@ -16,6 +16,20 @@ See the Mulan PSL v2 for more details. */
 #include "sm_meta.h"
 #include "common/context.h"
 
+struct MemoryIndexComparator {
+    std::vector<ColType> col_types;
+    std::vector<int> col_lens;
+
+    bool operator()(const std::string &lhs, const std::string &rhs) const {
+        return ix_compare(lhs.data(), rhs.data(), col_types, col_lens) < 0;
+    }
+};
+
+struct MemoryIndex {
+    IndexMeta meta;
+    std::map<std::string, Rid, MemoryIndexComparator> entries;
+};
+
 class Context;
 
 struct ColDef {
@@ -30,6 +44,7 @@ class SmManager {
     DbMeta db_;             // 当前打开的数据库的元数据
     std::unordered_map<std::string, std::unique_ptr<RmFileHandle>> fhs_;    // file name -> record file handle, 当前数据库中每张表的数据文件
     std::unordered_map<std::string, std::unique_ptr<IxIndexHandle>> ihs_;   // file name -> index file handle, 当前数据库中每个索引的文件
+    std::unordered_map<std::string, std::shared_ptr<MemoryIndex>> mem_indexes_;
    private:
     DiskManager* disk_manager_;
     BufferPoolManager* buffer_pool_manager_;
@@ -79,4 +94,17 @@ class SmManager {
     void drop_index(const std::string& tab_name, const std::vector<std::string>& col_names, Context* context);
     
     void drop_index(const std::string& tab_name, const std::vector<ColMeta>& col_names, Context* context);
+
+    void rebuild_indexes(const std::string& tab_name, Context* context);
+
+    void check_index_conflicts(const std::string &tab_name, const RmRecord &rec, const Rid *ignore_rid = nullptr);
+
+    void insert_index_entries(const std::string &tab_name, const RmRecord &rec, const Rid &rid, Context *context);
+
+    void delete_index_entries(const std::string &tab_name, const RmRecord &rec, const Rid &rid, Context *context);
+
+    void update_index_entries(const std::string &tab_name, const RmRecord &old_rec, const RmRecord &new_rec,
+                              const Rid &rid, Context *context);
+
+    std::shared_ptr<MemoryIndex> get_memory_index(const std::string &tab_name, const std::vector<std::string> &col_names);
 };

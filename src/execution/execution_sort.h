@@ -7,9 +7,12 @@ THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
 EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
 MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 See the Mulan PSL v2 for more details. */
-
 #pragma once
-#include "common/type_cast.h"
+
+#include <algorithm>
+#include <memory>
+#include <vector>
+
 #include "execution_defs.h"
 #include "execution_manager.h"
 #include "executor_abstract.h"
@@ -19,58 +22,75 @@ See the Mulan PSL v2 for more details. */
 class SortExecutor : public AbstractExecutor {
    private:
     std::unique_ptr<AbstractExecutor> prev_;
-    ColMeta sort_col_;                              // 排序列的元信息（单键排序）
-    bool is_desc_;
-    std::vector<std::unique_ptr<RmRecord>> buffered_;
-    size_t idx_ = 0;
+    std::vector<ColMeta> sort_cols_;
+    std::vector<bool> is_desc_;
+    int limit_count_;
+    std::vector<std::unique_ptr<RmRecord>> sorted_;
+    size_t cursor_ = 0;
+    std::vector<ColMeta> cols_;
+    size_t tuple_len_ = 0;
 
    public:
-    SortExecutor(std::unique_ptr<AbstractExecutor> prev, TabCol sel_cols, bool is_desc) {
+    SortExecutor(std::unique_ptr<AbstractExecutor> prev, const std::vector<TabCol> &sel_cols,
+                 const std::vector<bool> &is_desc, int limit_count) {
         prev_ = std::move(prev);
-        sort_col_ = prev_->get_col_offset(sel_cols);
         is_desc_ = is_desc;
+        limit_count_ = limit_count;
+        cols_ = prev_->cols();
+        tuple_len_ = prev_->tupleLen();
+        for (const auto &sel_col : sel_cols) {
+            sort_cols_.push_back(prev_->get_col_offset(sel_col));
+        }
     }
 
     void beginTuple() override {
-        buffered_.clear();
-        idx_ = 0;
-        // 从子结点读取所有元组，放入 buffer
+        sorted_.clear();
+        cursor_ = 0;
         prev_->beginTuple();
         while (!prev_->is_end()) {
             auto rec = prev_->Next();
-            buffered_.push_back(std::move(rec));
+            sorted_.push_back(std::make_unique<RmRecord>(*rec));
             prev_->nextTuple();
         }
-        // 排序
-        std::sort(buffered_.begin(), buffered_.end(),
-                  [this](const std::unique_ptr<RmRecord> &a,
-                         const std::unique_ptr<RmRecord> &b) {
-                      const char *a_val = a->data + sort_col_.offset;
-                      const char *b_val = b->data + sort_col_.offset;
-                      int cmp = compare_value(a_val, b_val, sort_col_.type, sort_col_.len);
-                      return is_desc_ ? (cmp > 0) : (cmp < 0);
-                  });
+
+        std::stable_sort(sorted_.begin(), sorted_.end(),
+                         [&](const std::unique_ptr<RmRecord> &lhs, const std::unique_ptr<RmRecord> &rhs) {
+                             for (size_t i = 0; i < sort_cols_.size(); ++i) {
+                                 const auto &col = sort_cols_[i];
+                                 Value l = Value::from_raw(col.type, lhs->data + col.offset, col.len);
+                                 Value r = Value::from_raw(col.type, rhs->data + col.offset, col.len);
+                                 int cmp = compare_values(l, r);
+                                 if (cmp == 0) {
+                                     continue;
+                                 }
+                                 return is_desc_[i] ? (cmp > 0) : (cmp < 0);
+                             }
+                             return false;
+                         });
+
+        if (limit_count_ >= 0 && static_cast<int>(sorted_.size()) > limit_count_) {
+            sorted_.resize(static_cast<size_t>(limit_count_));
+        }
     }
 
     void nextTuple() override {
-        if (idx_ < buffered_.size()) idx_++;
+        if (cursor_ < sorted_.size()) {
+            ++cursor_;
+        }
     }
 
     std::unique_ptr<RmRecord> Next() override {
-        if (idx_ >= buffered_.size()) return nullptr;
-        return std::make_unique<RmRecord>(buffered_[idx_]->size, buffered_[idx_]->data);
+        if (is_end()) {
+            return nullptr;
+        }
+        return std::make_unique<RmRecord>(*sorted_[cursor_]);
     }
 
     Rid &rid() override { return _abstract_rid; }
 
-    bool is_end() const override { return idx_ >= buffered_.size(); }
+    bool is_end() const override { return cursor_ >= sorted_.size(); }
 
-    size_t tupleLen() const override { return prev_->tupleLen(); }
+    size_t tupleLen() const override { return tuple_len_; }
 
-    const std::vector<ColMeta> &cols() const override { return prev_->cols(); }
-
-   private:
-    static int compare_value(const char *a, const char *b, ColType type, int len) {
-        return TypeCaster::compare_raw(a, type, len, b, type, len);
-    }
+    const std::vector<ColMeta> &cols() const override { return cols_; }
 };

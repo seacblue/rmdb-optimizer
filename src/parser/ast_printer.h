@@ -46,6 +46,8 @@ private:
                 {SV_TYPE_INT,    "INT"},
                 {SV_TYPE_FLOAT,  "FLOAT"},
                 {SV_TYPE_STRING, "STRING"},
+                {SV_TYPE_BIGINT, "BIGINT"},
+                {SV_TYPE_DATETIME, "DATETIME"},
         };
         return m.at(type);
     }
@@ -58,17 +60,6 @@ private:
                 {SV_OP_GT, ">"},
                 {SV_OP_LE, "<="},
                 {SV_OP_GE, ">="},
-        };
-        return m.at(op);
-    }
-
-    static std::string arith_op2str(SvArithOp op) {
-        static std::map<SvArithOp, std::string> m{
-                {SV_OP_ADD, "+"},
-                {SV_OP_SUB, "-"},
-                {SV_OP_MUL, "*"},
-                {SV_OP_DIV, "/"},
-                {SV_OP_NEG, "NEG"},
         };
         return m.at(op);
     }
@@ -93,6 +84,20 @@ private:
         } else if (auto x = std::dynamic_pointer_cast<ShowIndex>(node)) {
             std::cout << "SHOW_INDEX\n";
             print_val(x->tab_name, offset);
+        } else if (auto x = std::dynamic_pointer_cast<AggFunc>(node)) {
+            std::cout << "AGG_FUNC\n";
+            switch (x->type) {
+                case AGG_COUNT: print_val("COUNT", offset); break;
+                case AGG_MAX: print_val("MAX", offset); break;
+                case AGG_MIN: print_val("MIN", offset); break;
+                case AGG_SUM: print_val("SUM", offset); break;
+            }
+            print_val(x->alias, offset);
+            if (x->is_star) {
+                print_val("*", offset);
+            } else {
+                print_node(x->col, offset);
+            }
         } else if (auto x = std::dynamic_pointer_cast<CreateTable>(node)) {
             std::cout << "CREATE_TABLE\n";
             print_val(x->tab_name, offset);
@@ -115,10 +120,6 @@ private:
             // print_val(x->col_name, offset);
             for(auto col_name: x->col_names)
                 print_val(col_name, offset);
-        } else if (auto x = std::dynamic_pointer_cast<LoadStmt>(node)) {
-            std::cout << "LOAD\n";
-            print_val(x->file_path, offset);
-            print_val(x->tab_name, offset);
         } else if (auto x = std::dynamic_pointer_cast<ColDef>(node)) {
             std::cout << "COL_DEF\n";
             print_val(x->col_name, offset);
@@ -140,19 +141,10 @@ private:
         } else if (auto x = std::dynamic_pointer_cast<StringLit>(node)) {
             std::cout << "STRING_LIT\n";
             print_val(x->val, offset);
-        } else if (auto x = std::dynamic_pointer_cast<ArithExpr>(node)) {
-            std::cout << "ARITH_EXPR\n";
-            print_node(x->lhs, offset);
-            print_val(arith_op2str(x->op), offset);
-            print_node(x->rhs, offset);
-        } else if (auto x = std::dynamic_pointer_cast<UnaryExpr>(node)) {
-            std::cout << "UNARY_EXPR\n";
-            print_val(arith_op2str(x->op), offset);
-            print_node(x->rhs, offset);
         } else if (auto x = std::dynamic_pointer_cast<SetClause>(node)) {
             std::cout << "SET_CLAUSE\n";
             print_val(x->col_name, offset);
-            print_node(x->rhs, offset);
+            print_node(x->val, offset);
         } else if (auto x = std::dynamic_pointer_cast<BinaryExpr>(node)) {
             std::cout << "BINARY_EXPR\n";
             print_node(x->lhs, offset);
@@ -173,9 +165,19 @@ private:
             print_node_list(x->conds, offset);
         } else if (auto x = std::dynamic_pointer_cast<SelectStmt>(node)) {
             std::cout << "SELECT\n";
-            print_node_list(x->cols, offset);
+            if (x->has_aggs) {
+                print_node_list(x->aggs, offset);
+            } else {
+                print_node_list(x->cols, offset);
+            }
             print_val_list(x->tabs, offset);
             print_node_list(x->conds, offset);
+            if (x->has_sort) {
+                print_node_list(x->orders, offset);
+            }
+            if (x->has_limit) {
+                print_val(x->limit_count, offset);
+            }
         } else if (auto x = std::dynamic_pointer_cast<TxnBegin>(node)) {
             std::cout << "BEGIN\n";
         } else if (auto x = std::dynamic_pointer_cast<TxnCommit>(node)) {

@@ -16,13 +16,12 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/CMakeLists.txt")
     add_subdirectory(test)
 endif()
 
+
 target_link_libraries(parser execution pthread)
 
 add_executable(rmdb rmdb.cpp)
-target_link_libraries(rmdb parser execution pthread planner analyze)
+target_link_libraries(rmdb parser execution pthread planner analyze common)
 
 # unit_test
 add_executable(unit_test unit_test.cpp)
 target_link_libraries(unit_test storage lru_replacer record gtest_main)  # add gtest
-add_test(NAME unit_test COMMAND unit_test
-    WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
