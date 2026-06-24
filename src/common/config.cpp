@@ -14,3 +14,7 @@ std::chrono::milliseconds cycle_detection_interval{50};
 std::atomic<bool> enable_logging{true};
 std::chrono::duration<int64_t> log_timeout = std::chrono::seconds(3);
 std::atomic<bool> g_output_file_on{true};
+
+
+
+std::string g_output_file_path{"output.txt"};

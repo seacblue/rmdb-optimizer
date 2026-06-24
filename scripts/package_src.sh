@@ -58,6 +58,10 @@ EXCLUDES=(
     "build/*"                           # 编译产物
     ".git/*"                            # 版本历史
     ".github/*"                         # CI 配置
+    "deps/googletest/googlemock/test/*" # gmock 测试 (评测机空间有限)
+    "deps/googletest/googletest/test/*" # gtest 测试
+    "deps/googletest/*/.git/*"          # gtest 的 git 历史
+    "*/.DS_Store"                       # macOS 垃圾
 )
 
 ZIP_OPTS=()
